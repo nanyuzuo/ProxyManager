@@ -10,6 +10,7 @@
 - 支持查看当前代理状态
 - 支持代理连接测试
 - 支持临时代理设置（不保存配置）
+- 支持对git、npm、pip、docker等常用开发工具代理的自动配置（启用后自动配置）
 
 ## 安装说明
 
@@ -20,8 +21,15 @@
 ```powershell
 .\proxy4powershell.ps1
 ```
-3. 在弹出的菜单中选择 `1` 进行安装
-4. 根据提示重启 PowerShell 或执行 `. $PROFILE` 使配置生效
+3. 如果因权限问题不能运行脚本，切换至管理员账户，输入：
+
+   ```powershell
+   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
+   ```
+
+4. 在弹出的菜单中选择 `1` 进行安装
+
+5. 根据提示重启 PowerShell 或执行 `. $PROFILE` 使配置生效
 
 ### Linux/macOS
 
@@ -160,6 +168,7 @@ proxy curltest
 5. 使用 `--NoSave` 或 `-NoSave` 选项时，修改的配置仅在当前会话有效
 6. 建议先使用 `setdefault` 设置好常用的代理配置
 7. 使用 `status` 命令可以同时查看当前代理状态和默认配置
+8. 代理服务器支持socks5时，应优先使用socks5,提供更好的代理体验
 
 ## 卸载说明
 

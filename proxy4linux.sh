@@ -35,6 +35,11 @@ HTTPS_IP='127.0.0.1'
 HTTPS_PORT='7890'
 SOCKS5_IP='127.0.0.1'
 SOCKS5_PORT='7891'
+# 工具代理配置开关
+ENABLE_GIT_PROXY=1
+ENABLE_NPM_PROXY=1
+ENABLE_PIP_PROXY=1
+ENABLE_DOCKER_PROXY=1
 EOL
 
     # 生成代理函数脚本
@@ -60,7 +65,445 @@ load_config() {
         HTTPS_PORT="7890"
         SOCKS5_IP="127.0.0.1"
         SOCKS5_PORT="7891"
+        ENABLE_GIT_PROXY=1
+        ENABLE_NPM_PROXY=1
+        ENABLE_PIP_PROXY=1
+        ENABLE_DOCKER_PROXY=1
         save_config
+    fi
+}
+
+# Git代理配置函数
+configure_git_proxy() {
+    local action=$1
+    local protocol=${2:-"all"}  # 新增参数，用于指定当前启用的代理协议
+    local http_proxy_url="http://$HTTP_IP:$HTTP_PORT"
+    local https_proxy_url="http://$HTTPS_IP:$HTTPS_PORT"
+    local socks_proxy_url="socks5h://$SOCKS5_IP:$SOCKS5_PORT"  # 修改为 socks5h
+    
+    if [ "$action" = "enable" ] && [ "$ENABLE_GIT_PROXY" = "1" ]; then
+        # 根据协议类型设置不同的代理
+        case $protocol in
+            http)
+                git config --global http.proxy "$http_proxy_url"
+                git config --global https.proxy "$http_proxy_url"
+                echo "已配置Git HTTP代理:"
+                echo "  http.proxy  -> $http_proxy_url"
+                echo "  https.proxy -> $http_proxy_url"
+                ;;
+            https)
+                git config --global http.proxy "$https_proxy_url"
+                git config --global https.proxy "$https_proxy_url"
+                echo "已配置Git HTTPS代理:"
+                echo "  http.proxy  -> $https_proxy_url"
+                echo "  https.proxy -> $https_proxy_url"
+                ;;
+            socks5)
+                git config --global http.proxy "$socks_proxy_url"
+                git config --global https.proxy "$socks_proxy_url"
+                echo "已配置Git SOCKS5代理:"
+                echo "  http.proxy  -> $socks_proxy_url"
+                echo "  https.proxy -> $socks_proxy_url"
+                ;;
+            all)
+                git config --global http.proxy "$http_proxy_url"
+                git config --global https.proxy "$http_proxy_url"
+                echo "已配置Git代理:"
+                echo "  http.proxy  -> $http_proxy_url"
+                echo "  https.proxy -> $http_proxy_url"
+                ;;
+        esac
+        
+        # 根据操作系统设置SSL后端
+        if [[ "$(uname)" == "Darwin" ]]; then
+            # macOS 通常使用 OpenSSL
+            git config --global http.sslBackend "openssl"
+        elif [[ "$(uname)" == "Linux" ]]; then
+            # 检查系统支持的 SSL 后端
+            if git config --global http.sslBackend "gnutls" 2>/dev/null; then
+                echo "已配置 Git SSL 后端: GnuTLS"
+            elif git config --global http.sslBackend "openssl" 2>/dev/null; then
+                echo "已配置 Git SSL 后端: OpenSSL"
+            else
+                # 如果都不支持，则不设置 SSL 后端
+                git config --global --unset http.sslBackend
+                echo "未配置 Git SSL 后端（使用系统默认值）"
+            fi
+        fi
+    elif [ "$action" = "disable" ]; then
+        git config --global --unset http.proxy
+        git config --global --unset https.proxy
+        git config --global --unset http.sslBackend
+        echo "已清除Git代理配置"
+    fi
+}
+
+# NPM代理配置函数
+configure_npm_proxy() {
+    local action=$1
+    local protocol=${2:-"all"}
+    local http_proxy_url="http://$HTTP_IP:$HTTP_PORT"
+    local https_proxy_url="http://$HTTPS_IP:$HTTPS_PORT"
+    local socks_proxy_url="socks5://$SOCKS5_IP:$SOCKS5_PORT"
+    
+    if [ "$action" = "enable" ] && [ "$ENABLE_NPM_PROXY" = "1" ]; then
+        case $protocol in
+            http)
+                npm config set proxy "$http_proxy_url"
+                npm config set https-proxy "$http_proxy_url"
+                echo "已配置NPM HTTP代理:"
+                echo "  proxy       -> $http_proxy_url"
+                echo "  https-proxy -> $http_proxy_url"
+                ;;
+            https)
+                npm config set proxy "$https_proxy_url"
+                npm config set https-proxy "$https_proxy_url"
+                echo "已配置NPM HTTPS代理:"
+                echo "  proxy       -> $https_proxy_url"
+                echo "  https-proxy -> $https_proxy_url"
+                ;;
+            socks5)
+                npm config set proxy "$socks_proxy_url"
+                npm config set https-proxy "$socks_proxy_url"
+                echo "已配置NPM SOCKS5代理:"
+                echo "  proxy       -> $socks_proxy_url"
+                echo "  https-proxy -> $socks_proxy_url"
+                ;;
+            all)
+                npm config set proxy "$http_proxy_url"
+                npm config set https-proxy "$http_proxy_url"
+                echo "已配置NPM代理:"
+                echo "  proxy       -> $http_proxy_url"
+                echo "  https-proxy -> $http_proxy_url"
+                ;;
+        esac
+    elif [ "$action" = "disable" ]; then
+        npm config delete proxy
+        npm config delete https-proxy
+        echo "已清除NPM代理配置"
+    fi
+}
+
+# PIP代理配置函数
+configure_pip_proxy() {
+    local action=$1
+    local protocol=${2:-"all"}
+    local http_proxy_url="http://$HTTP_IP:$HTTP_PORT"
+    local https_proxy_url="http://$HTTPS_IP:$HTTPS_PORT"
+    local socks_proxy_url="socks5h://$SOCKS5_IP:$SOCKS5_PORT"  # 修改为 socks5h
+    local pip_config_dir="$HOME/.config/pip"
+    local pip_config_file="$pip_config_dir/pip.conf"
+    
+    if [ "$action" = "enable" ] && [ "$ENABLE_PIP_PROXY" = "1" ]; then
+        mkdir -p "$pip_config_dir"
+        
+        case $protocol in
+            http)
+                cat > "$pip_config_file" <<EOF
+[global]
+proxy = $http_proxy_url
+https_proxy = $http_proxy_url
+EOF
+                echo "已配置PIP HTTP代理:"
+                echo "  proxy       -> $http_proxy_url"
+                echo "  https_proxy -> $http_proxy_url"
+                ;;
+            https)
+                cat > "$pip_config_file" <<EOF
+[global]
+proxy = $https_proxy_url
+https_proxy = $https_proxy_url
+EOF
+                echo "已配置PIP HTTPS代理:"
+                echo "  proxy       -> $https_proxy_url"
+                echo "  https_proxy -> $https_proxy_url"
+                ;;
+            socks5)
+                cat > "$pip_config_file" <<EOF
+[global]
+proxy = $socks_proxy_url
+https_proxy = $socks_proxy_url
+EOF
+                echo "已配置PIP SOCKS5代理:"
+                echo "  proxy       -> $socks_proxy_url"
+                echo "  https_proxy -> $socks_proxy_url"
+                ;;
+            all)
+                cat > "$pip_config_file" <<EOF
+[global]
+proxy = $http_proxy_url
+https_proxy = $http_proxy_url
+EOF
+                echo "已配置PIP代理:"
+                echo "  proxy       -> $http_proxy_url"
+                echo "  https_proxy -> $http_proxy_url"
+                ;;
+        esac
+    elif [ "$action" = "disable" ]; then
+        rm -f "$pip_config_file"
+        echo "已清除PIP代理配置"
+    fi
+}
+
+# Docker代理配置函数
+configure_docker_proxy() {
+    local action=$1
+    local protocol=${2:-"all"}
+    local http_proxy_url="http://$HTTP_IP:$HTTP_PORT"
+    local https_proxy_url="http://$HTTPS_IP:$HTTPS_PORT"
+    local socks_proxy_url="socks5://$SOCKS5_IP:$SOCKS5_PORT"
+    local docker_config_dir="$HOME/.docker"
+    local docker_config_file="$docker_config_dir/config.json"
+    local docker_daemon_dir="/etc/docker"
+    local docker_daemon_file="$docker_daemon_dir/daemon.json"
+    local docker_service_dir="/etc/systemd/system/docker.service.d"
+    local docker_service_file="$docker_service_dir/http-proxy.conf"
+    
+    if [ "$action" = "enable" ] && [ "$ENABLE_DOCKER_PROXY" = "1" ]; then
+        # 确保目录存在
+        mkdir -p "$docker_config_dir"
+        
+        # 如果配置文件不存在，创建一个新的
+        if [ ! -f "$docker_config_file" ]; then
+            echo '{}' > "$docker_config_file"
+        fi
+        
+        # 尝试配置 Docker 守护进程
+        if [ -w "$docker_daemon_dir" ]; then
+            sudo mkdir -p "$docker_daemon_dir"
+            
+            case $protocol in
+                http)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$http_proxy_url"'",
+      "httpsProxy": "'"$http_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}' | sudo tee "$docker_daemon_file" > /dev/null
+                    echo "已配置Docker HTTP代理:"
+                    echo "  HTTP_PROXY  -> $http_proxy_url"
+                    echo "  HTTPS_PROXY -> $http_proxy_url"
+                    ;;
+                https)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$https_proxy_url"'",
+      "httpsProxy": "'"$https_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}' | sudo tee "$docker_daemon_file" > /dev/null
+                    echo "已配置Docker HTTPS代理:"
+                    echo "  HTTP_PROXY  -> $https_proxy_url"
+                    echo "  HTTPS_PROXY -> $https_proxy_url"
+                    ;;
+                socks5)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$socks_proxy_url"'",
+      "httpsProxy": "'"$socks_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}' | sudo tee "$docker_daemon_file" > /dev/null
+                    echo "已配置Docker SOCKS5代理:"
+                    echo "  HTTP_PROXY  -> $socks_proxy_url"
+                    echo "  HTTPS_PROXY -> $socks_proxy_url"
+                    ;;
+                all)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$http_proxy_url"'",
+      "httpsProxy": "'"$http_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}' | sudo tee "$docker_daemon_file" > /dev/null
+                    echo "已配置Docker代理:"
+                    echo "  HTTP_PROXY  -> $http_proxy_url"
+                    echo "  HTTPS_PROXY -> $http_proxy_url"
+                    ;;
+            esac
+            
+            # 重启 Docker 服务（如果有权限）
+            if command -v systemctl >/dev/null 2>&1; then
+                sudo systemctl daemon-reload
+                sudo systemctl restart docker || true
+            fi
+        else
+            # 提供手动配置指南
+            echo "警告: 无法自动配置Docker代理（需要root权限）"
+            echo "请按照以下步骤手动配置Docker代理："
+            echo -e "\n1. 创建或编辑 Docker 守护进程配置文件："
+            echo "   sudo mkdir -p $docker_daemon_dir"
+            echo "   sudo nano $docker_daemon_file"
+            echo -e "\n2. 在编辑器中添加以下内容："
+            case $protocol in
+                http)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$http_proxy_url"'",
+      "httpsProxy": "'"$http_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}'
+                    ;;
+                https)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$https_proxy_url"'",
+      "httpsProxy": "'"$https_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}'
+                    ;;
+                socks5)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$socks_proxy_url"'",
+      "httpsProxy": "'"$socks_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}'
+                    ;;
+                all)
+                    echo '{
+  "proxies": {
+    "default": {
+      "httpProxy": "'"$http_proxy_url"'",
+      "httpsProxy": "'"$http_proxy_url"'",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}'
+                    ;;
+            esac
+            
+            echo -e "\n3. 创建 systemd 配置目录："
+            echo "   sudo mkdir -p $docker_service_dir"
+            
+            echo -e "\n4. 创建代理配置文件："
+            echo "   sudo nano $docker_service_file"
+            
+            echo -e "\n5. 在编辑器中添加以下内容："
+            case $protocol in
+                http)
+                    echo "[Service]
+Environment=\"HTTP_PROXY=$http_proxy_url\"
+Environment=\"HTTPS_PROXY=$http_proxy_url\"
+Environment=\"NO_PROXY=localhost,127.0.0.1\""
+                    ;;
+                https)
+                    echo "[Service]
+Environment=\"HTTP_PROXY=$https_proxy_url\"
+Environment=\"HTTPS_PROXY=$https_proxy_url\"
+Environment=\"NO_PROXY=localhost,127.0.0.1\""
+                    ;;
+                socks5)
+                    echo "[Service]
+Environment=\"HTTP_PROXY=$socks_proxy_url\"
+Environment=\"HTTPS_PROXY=$socks_proxy_url\"
+Environment=\"NO_PROXY=localhost,127.0.0.1\""
+                    ;;
+                all)
+                    echo "[Service]
+Environment=\"HTTP_PROXY=$http_proxy_url\"
+Environment=\"HTTPS_PROXY=$http_proxy_url\"
+Environment=\"NO_PROXY=localhost,127.0.0.1\""
+                    ;;
+            esac
+            
+            echo -e "\n6. 重新加载配置并重启 Docker 服务："
+            echo "   sudo systemctl daemon-reload"
+            echo "   sudo systemctl restart docker"
+            
+            echo -e "\n7. 验证配置是否生效："
+            echo "   docker info | grep -i proxy"
+            
+            echo -e "\n注意："
+            echo "- 如果使用的是其他编辑器，可以将 nano 替换为 vim 或其他编辑器"
+            echo "- 确保 JSON 格式正确，不要有多余的逗号"
+            echo "- 如果配置不生效，请检查 Docker 服务状态："
+            echo "  sudo systemctl status docker"
+        fi
+    elif [ "$action" = "disable" ]; then
+        if [ -w "$docker_daemon_dir" ]; then
+            sudo rm -f "$docker_daemon_file"
+            sudo rm -f "$docker_service_file"
+            if command -v systemctl >/dev/null 2>&1; then
+                sudo systemctl daemon-reload
+                sudo systemctl restart docker || true
+            fi
+            echo "已清除Docker代理配置"
+        else
+            echo "警告: 无法自动清除Docker代理配置（需要root权限）"
+            echo "请手动执行以下命令清除Docker代理配置："
+            echo "1. 删除代理配置文件："
+            echo "   sudo rm -f $docker_daemon_file"
+            echo "   sudo rm -f $docker_service_file"
+            echo "2. 重新加载配置并重启 Docker 服务："
+            echo "   sudo systemctl daemon-reload"
+            echo "   sudo systemctl restart docker"
+        fi
+    fi
+}
+
+# 工具代理状态检查函数
+check_tool_proxy_status() {
+    echo -e "\n工具代理状态:"
+    
+    # Git代理状态
+    echo "Git:"
+    if [ "$ENABLE_GIT_PROXY" = "1" ]; then
+        echo "  http.proxy  -> $(git config --global http.proxy || echo '未设置')"
+        echo "  https.proxy -> $(git config --global https.proxy || echo '未设置')"
+    else
+        echo "  已禁用"
+    fi
+    
+    # NPM代理状态
+    echo -e "\nNPM:"
+    if [ "$ENABLE_NPM_PROXY" = "1" ]; then
+        echo "  proxy       -> $(npm config get proxy || echo '未设置')"
+        echo "  https-proxy -> $(npm config get https-proxy || echo '未设置')"
+    else
+        echo "  已禁用"
+    fi
+    
+    # PIP代理状态
+    echo -e "\nPIP:"
+    if [ "$ENABLE_PIP_PROXY" = "1" ]; then
+        if [ -f "$HOME/.config/pip/pip.conf" ]; then
+            echo "  已配置 ($HOME/.config/pip/pip.conf)"
+        else
+            echo "  未配置"
+        fi
+    else
+        echo "  已禁用"
+    fi
+    
+    # Docker代理状态
+    echo -e "\nDocker:"
+    if [ "$ENABLE_DOCKER_PROXY" = "1" ]; then
+        if [ -f "/etc/docker/daemon.json" ]; then
+            echo "  已配置 (/etc/docker/daemon.json)"
+        else
+            echo "  未配置"
+        fi
+    else
+        echo "  已禁用"
     fi
 }
 
@@ -76,11 +519,15 @@ HTTPS_IP='$HTTPS_IP'
 HTTPS_PORT='$HTTPS_PORT'
 SOCKS5_IP='$SOCKS5_IP'
 SOCKS5_PORT='$SOCKS5_PORT'
+ENABLE_GIT_PROXY=$ENABLE_GIT_PROXY
+ENABLE_NPM_PROXY=$ENABLE_NPM_PROXY
+ENABLE_PIP_PROXY=$ENABLE_PIP_PROXY
+ENABLE_DOCKER_PROXY=$ENABLE_DOCKER_PROXY
 EOF
     
     # 验证配置文件是否成功创建
     if [ ! -f "$CONFIG_FILE" ]; then
-        echo "Error: Failed to save configuration file"
+        echo "Error: Failed to save configuration"
         return 1
     fi
 }
@@ -125,16 +572,31 @@ proxy() {
                     export HTTP_PROXY="http://$ip:$port"
                     export http_proxy="$HTTP_PROXY"
                     [ $nosave -eq 0 ] && { HTTP_IP=$ip; HTTP_PORT=$port; save_config; }
+                    # 配置工具代理
+                    configure_git_proxy "enable" "http"
+                    configure_npm_proxy "enable" "http"
+                    configure_pip_proxy "enable" "http"
+                    configure_docker_proxy "enable" "http"
                     ;;
                 https)
                     export HTTPS_PROXY="http://$ip:$port"
                     export https_proxy="$HTTPS_PROXY"
                     [ $nosave -eq 0 ] && { HTTPS_IP=$ip; HTTPS_PORT=$port; save_config; }
+                    # 配置工具代理
+                    configure_git_proxy "enable" "https"
+                    configure_npm_proxy "enable" "https"
+                    configure_pip_proxy "enable" "https"
+                    configure_docker_proxy "enable" "https"
                     ;;
                 socks5)
                     export ALL_PROXY="socks5://$ip:$port"
                     export all_proxy="$ALL_PROXY"
                     [ $nosave -eq 0 ] && { SOCKS5_IP=$ip; SOCKS5_PORT=$port; save_config; }
+                    # 配置工具代理
+                    configure_git_proxy "enable" "socks5"
+                    configure_npm_proxy "enable" "socks5"
+                    configure_pip_proxy "enable" "socks5"
+                    configure_docker_proxy "enable" "socks5"
                     ;;
                 all)
                     export HTTP_PROXY="http://$ip:$port"
@@ -149,6 +611,11 @@ proxy() {
                         SOCKS5_IP=$ip; SOCKS5_PORT=$port
                         save_config
                     }
+                    # 配置工具代理
+                    configure_git_proxy "enable" "all"
+                    configure_npm_proxy "enable" "all"
+                    configure_pip_proxy "enable" "all"
+                    configure_docker_proxy "enable" "all"
                     ;;
             esac
             ;;
@@ -160,23 +627,38 @@ proxy() {
                         http)   unset HTTP_PROXY http_proxy ;;
                         https)  unset HTTPS_PROXY https_proxy ;;
                         socks5) unset ALL_PROXY all_proxy ;;
-                        all)    unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy ;;
+                        all)    
+                            unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy
+                            configure_git_proxy "disable"
+                            configure_npm_proxy "disable"
+                            configure_pip_proxy "disable"
+                            configure_docker_proxy "disable"
+                            ;;
                     esac
                     ;;
-                *) unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy ;;
+                *) 
+                    unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy
+                    configure_git_proxy "disable"
+                    configure_npm_proxy "disable"
+                    configure_pip_proxy "disable"
+                    configure_docker_proxy "disable"
+                    ;;
             esac
             ;;
 
         status)
             load_config
-            echo -e "\nCurrent Proxy Status:"
+            echo -e "\n系统代理状态:"
             echo "HTTP:   ${HTTP_PROXY:-Disabled}"
             echo "HTTPS:  ${HTTPS_PROXY:-Disabled}"
             echo "SOCKS5: ${ALL_PROXY:-Disabled}"
-            echo -e "\nDefault Configuration:"
+            echo -e "\n默认配置:"
             echo "HTTP:   http://$HTTP_IP:$HTTP_PORT"
             echo "HTTPS:  http://$HTTPS_IP:$HTTPS_PORT"
             echo "SOCKS5: socks5://$SOCKS5_IP:$SOCKS5_PORT"
+            
+            # 显示工具代理状态
+            check_tool_proxy_status
             ;;
 
         setdefault)
@@ -259,6 +741,11 @@ proxy() {
             echo "  --ip            指定代理服务器IP地址"
             echo "  --port          指定代理服务器端口"
             echo "  --NoSave        不保存当前配置（仅用于 enable 命令）"
+            echo -e "\n支持的开发工具代理:"
+            echo "  - Git"
+            echo "  - NPM"
+            echo "  - PIP"
+            echo "  - Docker"
             echo -e "\n使用示例:"
             echo "1. 查看当前代理状态："
             echo "   proxy status"
@@ -285,10 +772,11 @@ proxy() {
             echo "- 建议先使用 setdefault 设置好常用的代理配置"
             echo "- 使用 status 命令可以同时查看当前代理状态和默认配置"
             echo "- 如果不指定协议，默认会设置所有协议的代理"
+            echo "- 工具代理（Git/NPM/PIP/Docker）会在启用系统代理时自动配置"
             ;;
 
         --version)
-            echo "Linux Proxy Manager v1.0"
+            echo "Linux Proxy Manager v1.1"
             echo "Created By nanyuzuo"
             ;;
     esac
@@ -324,21 +812,99 @@ EOL
 }
 
 uninstall_proxy() {
-    # 删除配置目录
+    echo "开始卸载代理管理器..."
+    
+    # 1. 首先禁用所有代理
+    if [ -f "$PROXY_DIR/proxy.sh" ]; then
+        source "$PROXY_DIR/proxy.sh"
+        proxy disable
+    fi
+
+    # 2. 清理环境变量
+    unset HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy
+
+    # 3. 清理 Git 配置
+    echo "清理 Git 代理配置..."
+    git config --global --unset http.proxy
+    git config --global --unset https.proxy
+    git config --global --unset http.sslBackend
+    git config --global --unset https.sslBackend
+
+    # 4. 清理 NPM 配置
+    echo "清理 NPM 代理配置..."
+    npm config delete proxy
+    npm config delete https-proxy
+    npm config delete registry
+
+    # 5. 清理 PIP 配置
+    echo "清理 PIP 代理配置..."
+    local pip_config_dir="$HOME/.config/pip"
+    local pip_config_file="$pip_config_dir/pip.conf"
+    if [ -f "$pip_config_file" ]; then
+        rm -f "$pip_config_file"
+    fi
+
+    # 6. 清理 Docker 配置
+    echo "清理 Docker 代理配置..."
+    local docker_daemon_dir="/etc/docker"
+    local docker_daemon_file="$docker_daemon_dir/daemon.json"
+    local docker_service_dir="/etc/systemd/system/docker.service.d"
+    local docker_service_file="$docker_service_dir/http-proxy.conf"
+    
+    if [ -w "$docker_daemon_dir" ]; then
+        sudo rm -f "$docker_daemon_file"
+        sudo rm -f "$docker_service_file"
+        if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl daemon-reload
+            sudo systemctl restart docker || true
+        fi
+    else
+        echo "注意: Docker 代理配置需要手动清理，请执行以下命令："
+        echo "sudo rm -f $docker_daemon_file"
+        echo "sudo rm -f $docker_service_file"
+        echo "sudo systemctl daemon-reload"
+        echo "sudo systemctl restart docker"
+    fi
+
+    # 7. 删除配置目录
+    echo "删除代理管理器配置目录..."
     rm -rf "$PROXY_DIR"
 
-    # 清理shell配置
+    # 8. 清理 shell 配置文件
+    echo "清理 shell 配置文件..."
     shell_type=$(detect_shell)
     case $shell_type in
         bash) rc_file="$HOME/.bashrc" ;;
         zsh)  rc_file="$HOME/.zshrc"  ;;
-        *)    return 1 ;;
+        *)    echo "警告: 未知的 shell 类型，请手动检查配置文件"; return 1 ;;
     esac
 
-    sed -i '/# Proxy Manager/d' "$rc_file"
-    sed -i "\|source $PROXY_SCRIPT|d" "$rc_file"
+    # 使用临时文件来保存清理后的内容
+    temp_file=$(mktemp)
+    grep -v "# Proxy Manager" "$rc_file" | grep -v "source $PROXY_SCRIPT" > "$temp_file"
+    mv "$temp_file" "$rc_file"
 
-    echo "Proxy manager uninstalled. Please restart your shell."
+    echo -e "\n代理管理器卸载完成！"
+    echo "请执行以下命令使更改生效："
+    echo "source $rc_file"
+    
+    # 9. 显示验证步骤
+    echo -e "\n请验证以下配置是否已清理："
+    echo "1. 环境变量："
+    echo "   echo \$HTTP_PROXY \$HTTPS_PROXY \$ALL_PROXY"
+    echo "2. Git 配置："
+    echo "   git config --global --get http.proxy"
+    echo "   git config --global --get https.proxy"
+    echo "3. NPM 配置："
+    echo "   npm config get proxy"
+    echo "   npm config get https-proxy"
+    echo "4. PIP 配置："
+    echo "   ls $pip_config_file"
+    echo "5. Docker 配置："
+    echo "   ls $docker_daemon_file"
+    echo "   ls $docker_service_file"
+    echo "6. 代理管理器文件："
+    echo "   ls $PROXY_DIR"
 }
 
 # 主菜单
