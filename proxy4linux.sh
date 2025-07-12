@@ -1,18 +1,95 @@
 #!/bin/bash
 
-# 安装管理脚本
+# Linux/macOS Proxy Manager - Enhanced Version
+# 增强版代理管理脚本，支持安全配置、备份恢复、错误处理等功能
+
+# 设置基本的错误处理，但不使用严格模式避免交互问题
+
+# 全局配置
 PROXY_DIR="$HOME/.proxy"
 PROXY_SCRIPT="$PROXY_DIR/proxy.sh"
 CONFIG_FILE="$PROXY_DIR/config"
+BACKUP_DIR="$PROXY_DIR/backup"
+LOG_FILE="$PROXY_DIR/proxy.log"
+
+# 颜色输出
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 日志函数
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# 彩色输出函数
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; log "INFO: $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; log "SUCCESS: $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; log "WARNING: $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; log "ERROR: $1"; }
+
+# 检查工具是否存在
+check_tool() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# 创建备份
+create_backup() {
+    local backup_name="backup_$(date +%Y%m%d_%H%M%S)"
+    local backup_path="$BACKUP_DIR/$backup_name"
+    
+    mkdir -p "$backup_path"
+    
+    # 备份shell配置文件
+    for shell_rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        if [[ -f "$shell_rc" ]]; then
+            cp "$shell_rc" "$backup_path/" 2>/dev/null || true
+        fi
+    done
+    
+    # 备份现有代理配置
+    if [[ -d "$PROXY_DIR" ]]; then
+        cp -r "$PROXY_DIR" "$backup_path/proxy_config" 2>/dev/null || true
+    fi
+    
+    print_success "备份已创建: $backup_path"
+    echo "$backup_path" > "$PROXY_DIR/.last_backup"
+}
+
+# 验证IP地址格式
+validate_ip() {
+    local ip="$1"
+    if [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || [[ $ip == "localhost" ]] || [[ $ip =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 验证端口号
+validate_port() {
+    local port="$1"
+    if [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
 
 show_menu() {
     clear
-    echo "Linux Proxy Manager"
-    echo "----------------------------------"
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
+    echo -e "${BLUE}       Linux/macOS Proxy Manager        ${NC}"
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
     echo "1. Install proxy function"
     echo "2. Uninstall proxy function"
-    echo "3. Exit"
-    echo "----------------------------------"
+    echo "3. Create configuration backup"
+    echo "4. Restore from backup"
+    echo "5. View logs"
+    echo "6. Exit"
+    echo -e "${BLUE}════════════════════════════════════════${NC}"
 }
 
 detect_shell() {
@@ -24,8 +101,17 @@ detect_shell() {
 }
 
 install_proxy() {
-    # 创建配置目录
-    mkdir -p "$PROXY_DIR" || { echo "Failed to create $PROXY_DIR"; exit 1; }
+    print_info "开始安装代理管理器..."
+    
+    # 创建必要目录
+    if ! mkdir -p "$PROXY_DIR" "$BACKUP_DIR"; then
+        print_error "无法创建配置目录 $PROXY_DIR"
+        return 1
+    fi
+    
+    # 创建备份
+    print_info "创建安装前备份..."
+    create_backup
 
     # 初始化默认配置文件
     cat > "$CONFIG_FILE" <<EOL
@@ -46,29 +132,107 @@ EOL
     cat > "$PROXY_SCRIPT" <<'EOL'
 #!/bin/bash
 
+# Linux/macOS Proxy Manager - Enhanced Runtime Version
+# 运行时代理管理脚本
+
 # 配置管理
 CONFIG_FILE="$HOME/.proxy/config"
+LOG_FILE="$HOME/.proxy/proxy.log"
 
+# 颜色输出
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 日志函数
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# 彩色输出函数
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; log "INFO: $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; log "SUCCESS: $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; log "WARNING: $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; log "ERROR: $1"; }
+
+# 验证IP地址格式
+validate_ip() {
+    local ip="$1"
+    if [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || [[ $ip == "localhost" ]] || [[ $ip =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 验证端口号
+validate_port() {
+    local port="$1"
+    if [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 安全的配置加载函数
 load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        # 使用eval来安全地加载配置
+    # 初始化默认配置
+    HTTP_IP="127.0.0.1"
+    HTTP_PORT="7890"
+    HTTPS_IP="127.0.0.1"
+    HTTPS_PORT="7890"
+    SOCKS5_IP="127.0.0.1"
+    SOCKS5_PORT="7891"
+    ENABLE_GIT_PROXY=1
+    ENABLE_NPM_PROXY=1
+    ENABLE_PIP_PROXY=1
+    ENABLE_DOCKER_PROXY=1
+    
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # 安全地读取配置文件，避免代码注入
         while IFS='=' read -r key value; do
-            if [[ $key && $value ]]; then
-                eval "$key=$value"
+            # 跳过空行和注释
+            [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+            
+            # 验证键名是否合法
+            if [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+                # 移除值的引号
+                value="${value#\'}"
+                value="${value%\'}"
+                value="${value#\"}"
+                value="${value%\"}"
+                
+                # 根据键名安全地设置变量
+                case "$key" in
+                    HTTP_IP|HTTPS_IP|SOCKS5_IP)
+                        if validate_ip "$value"; then
+                            declare -g "$key=$value"
+                        else
+                            print_warning "无效的IP地址: $key=$value，使用默认值"
+                        fi
+                        ;;
+                    HTTP_PORT|HTTPS_PORT|SOCKS5_PORT)
+                        if validate_port "$value"; then
+                            declare -g "$key=$value"
+                        else
+                            print_warning "无效的端口号: $key=$value，使用默认值"
+                        fi
+                        ;;
+                    ENABLE_GIT_PROXY|ENABLE_NPM_PROXY|ENABLE_PIP_PROXY|ENABLE_DOCKER_PROXY)
+                        if [[ "$value" == "0" || "$value" == "1" ]]; then
+                            declare -g "$key=$value"
+                        else
+                            print_warning "无效的开关值: $key=$value，使用默认值"
+                        fi
+                        ;;
+                esac
             fi
         done < "$CONFIG_FILE"
     else
-        # 初始化默认配置
-        HTTP_IP="127.0.0.1"
-        HTTP_PORT="7890"
-        HTTPS_IP="127.0.0.1"
-        HTTPS_PORT="7890"
-        SOCKS5_IP="127.0.0.1"
-        SOCKS5_PORT="7891"
-        ENABLE_GIT_PROXY=1
-        ENABLE_NPM_PROXY=1
-        ENABLE_PIP_PROXY=1
-        ENABLE_DOCKER_PROXY=1
+        print_info "配置文件不存在，使用默认配置"
         save_config
     fi
 }
@@ -724,7 +888,33 @@ proxy() {
             ;;
 
         test)
-            curl -sSf --connect-timeout 5 http://ip-api.com/json && echo "Proxy test success" || echo "Proxy test failed"
+            print_info "开始测试代理连接..."
+            local test_urls=("http://httpbin.org/ip" "https://ip.sb" "http://ip-api.com/json")
+            local success_count=0
+            
+            for url in "${test_urls[@]}"; do
+                print_info "测试 $url ..."
+                if timeout 10 curl -sSf --connect-timeout 5 "$url" >/dev/null 2>&1; then
+                    print_success "✓ $url 连接成功"
+                    ((success_count++))
+                else
+                    print_error "✗ $url 连接失败"
+                fi
+            done
+            
+            if [[ $success_count -gt 0 ]]; then
+                print_success "代理测试完成: $success_count/${#test_urls[@]} 个测试成功"
+                
+                # 显示当前IP
+                print_info "当前IP信息:"
+                timeout 10 curl -sSf --connect-timeout 5 "http://ip-api.com/json" 2>/dev/null | \
+                    python3 -m json.tool 2>/dev/null || \
+                    timeout 10 curl -sSf --connect-timeout 5 "https://ip.sb" 2>/dev/null || \
+                    echo "无法获取IP信息"
+            else
+                print_error "代理测试失败: 所有测试都未通过"
+                return 1
+            fi
             ;;
 
         --help)
@@ -776,8 +966,11 @@ proxy() {
             ;;
 
         --version)
-            echo "Linux Proxy Manager v1.1"
-            echo "Created By nanyuzuo"
+            echo -e "${BLUE}Linux/macOS Proxy Manager v2.0 Enhanced${NC}"
+            echo "原作者: nanyuzuo"
+            echo "增强版本: 添加了安全性、备份恢复、错误处理等功能"
+            echo "支持平台: Linux, macOS"
+            echo "支持工具: Git, NPM, PIP, Docker"
             ;;
     esac
 }
@@ -907,23 +1100,123 @@ uninstall_proxy() {
     echo "   ls $PROXY_DIR"
 }
 
+# 恢复备份功能
+restore_backup() {
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        print_error "没有找到备份目录"
+        return 1
+    fi
+    
+    local backups=($(ls -1t "$BACKUP_DIR" 2>/dev/null))
+    if [[ ${#backups[@]} -eq 0 ]]; then
+        print_error "没有可用的备份"
+        return 1
+    fi
+    
+    print_info "可用的备份:"
+    for i in "${!backups[@]}"; do
+        echo "  $((i+1)). ${backups[$i]}"
+    done
+    
+    read -p "请选择要恢复的备份编号 (1-${#backups[@]}): " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#backups[@]} ]]; then
+        local backup_path="$BACKUP_DIR/${backups[$((choice-1))]}"
+        print_info "正在恢复备份: $backup_path"
+        
+        # 恢复shell配置文件
+        for shell_rc in ".bashrc" ".zshrc" ".profile"; do
+            if [[ -f "$backup_path/$shell_rc" ]]; then
+                cp "$backup_path/$shell_rc" "$HOME/" 2>/dev/null || true
+                print_success "已恢复: $HOME/$shell_rc"
+            fi
+        done
+        
+        # 恢复代理配置
+        if [[ -d "$backup_path/proxy_config" ]]; then
+            rm -rf "$PROXY_DIR"
+            cp -r "$backup_path/proxy_config" "$PROXY_DIR" 2>/dev/null || true
+            print_success "已恢复代理配置"
+        fi
+        
+        print_success "备份恢复完成，请重新启动终端或运行 source ~/.bashrc 使配置生效"
+    else
+        print_error "无效的选择"
+        return 1
+    fi
+}
+
+# 查看日志功能
+view_logs() {
+    if [[ -f "$LOG_FILE" ]]; then
+        print_info "最近的日志记录:"
+        tail -20 "$LOG_FILE"
+    else
+        print_info "没有日志文件"
+    fi
+}
+
+# 错误处理函数（保留用于手动调用）
+handle_error() {
+    local error_code=$?
+    local line_number=${1:-"unknown"}
+    print_error "发生错误 (退出码: $error_code)"
+    print_info "请检查日志文件: $LOG_FILE"
+    return $error_code
+}
+
 # 主菜单
-while true; do
-    show_menu
-    read -p "请选择操作 (1/2/3): " choice
-    case $choice in
-        1) 
-            install_proxy
-            echo -e "\n按回车键返回主菜单..."
-            read
-            ;;
-        2) 
-            uninstall_proxy
-            echo -e "\n按回车键返回主菜单..."
-            read
-            ;;
-        3) exit ;;
-        *) echo "无效选项" ;;
-    esac
-done
+main() {
+    # 创建日志目录
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+    
+    while true; do
+        show_menu
+        read -p "请选择操作 (1-6): " choice
+        case $choice in
+            1) 
+                if install_proxy; then
+                    print_success "安装完成！"
+                else
+                    print_error "安装失败"
+                fi
+                echo -e "\n按回车键返回主菜单..."
+                read
+                ;;
+            2) 
+                if uninstall_proxy; then
+                    print_success "卸载完成！"
+                else
+                    print_error "卸载失败"
+                fi
+                echo -e "\n按回车键返回主菜单..."
+                read
+                ;;
+            3)
+                create_backup
+                echo -e "\n按回车键返回主菜单..."
+                read
+                ;;
+            4)
+                restore_backup
+                echo -e "\n按回车键返回主菜单..."
+                read
+                ;;
+            5)
+                view_logs
+                echo -e "\n按回车键返回主菜单..."
+                read
+                ;;
+            6) 
+                print_info "感谢使用代理管理器！"
+                exit 0
+                ;;
+            *) 
+                print_error "无效选项，请选择 1-6"
+                ;;
+        esac
+    done
+}
+
+# 启动主程序
+main "$@"
 

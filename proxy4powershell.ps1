@@ -1,7 +1,11 @@
-# PowerShell Proxy Manager
+# PowerShell Proxy Manager v2.0.0
+# Enhanced version with improved error handling and logging
+# Author: nanyuzuo
+# Last Updated: $(Get-Date -Format 'yyyy-MM-dd')
+
 param(
     [Parameter(Mandatory=$false)]
-    [ValidateSet("enable", "disable", "status", "setdefault", "test", "curltest", IgnoreCase=$true)]
+    [ValidateSet("enable", "disable", "status", "setdefault", "test", "curltest", "backup", "restore", "reset", "log", IgnoreCase=$true)]
     [string]$action = "status",
 
     [Parameter(Mandatory=$false)]
@@ -169,7 +173,11 @@ if ($Help) {
     Write-Host "  status     Show current status"
     Write-Host "  setdefault Set default proxy config"
     Write-Host "  test       Test proxy connection"
-    Write-Host "  curltest   Generate curl commands for manual testing`n"
+    Write-Host "  curltest   Generate curl commands for manual testing"
+    Write-Host "  backup     Backup current configuration"
+    Write-Host "  restore    Restore from backup"
+    Write-Host "  reset      Reset to default configuration"
+    Write-Host "  log        Show recent log entries`n"
     
     Write-Host "Protocol Options:" -ForegroundColor Cyan
     Write-Host "  http       HTTP proxy"
@@ -199,6 +207,15 @@ if ($Help) {
     Write-Host "7. Test proxy connection"
     Write-Host "   proxy test`n"
     
+    Write-Host "8. Backup configuration"
+    Write-Host "   proxy backup`n"
+    
+    Write-Host "9. Show recent logs"
+    Write-Host "   proxy log`n"
+    
+    Write-Host "10. Reset configuration"
+    Write-Host "    proxy reset`n"
+    
     
     Write-Host "Advanced Options:" -ForegroundColor Magenta
     Write-Host "  -NoSave    Execute without saving to config"
@@ -215,33 +232,188 @@ if ($Help) {
     exit
 }
 
-# 配置文件路径
+# 配置文件路径和日志路径
 $configPath = Join-Path $HOME "proxyconfig.xml"
+$logPath = Join-Path $HOME "proxy_manager.log"
+$backupPath = Join-Path $HOME "proxyconfig_backup.xml"
+
+# 日志记录函数
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet("INFO", "WARN", "ERROR", "SUCCESS")]
+        [string]$Level = "INFO"
+    )
+    
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] $Message"
+    
+    # 写入日志文件
+    try {
+        Add-Content -Path $logPath -Value $logEntry -Encoding UTF8
+    }
+    catch {
+        # 如果日志写入失败，不影响主要功能
+    }
+    
+    # 根据级别显示不同颜色
+    switch ($Level) {
+        "SUCCESS" { Write-Host $Message -ForegroundColor Green }
+        "WARN" { Write-Host $Message -ForegroundColor Yellow }
+        "ERROR" { Write-Host $Message -ForegroundColor Red }
+        default { Write-Host $Message }
+    }
+}
+
+# 参数验证函数
+function Test-ProxyParameters {
+    param(
+        [string]$IP,
+        [int]$Port
+    )
+    
+    $errors = @()
+    
+    # 验证IP地址
+    if ($IP) {
+        if (-not ($IP -match '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^localhost$|^[a-zA-Z0-9.-]+$')) {
+            $errors += "Invalid IP address format: $IP"
+        }
+    }
+    
+    # 验证端口号
+    if ($Port -and ($Port -lt 1 -or $Port -gt 65535)) {
+        $errors += "Invalid port number: $Port (must be 1-65535)"
+    }
+    
+    return $errors
+}
+
+# 网络连接测试函数
+function Test-ProxyConnectivity {
+    param(
+        [string]$IP,
+        [int]$Port,
+        [int]$TimeoutSeconds = 5
+    )
+    
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $connectTask = $tcpClient.ConnectAsync($IP, $Port)
+        
+        if ($connectTask.Wait($TimeoutSeconds * 1000)) {
+            $tcpClient.Close()
+            return $true
+        } else {
+            $tcpClient.Close()
+            return $false
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
+# 配置备份函数
+function Backup-ProxyConfig {
+    if (Test-Path $configPath) {
+        try {
+            Copy-Item -Path $configPath -Destination $backupPath -Force
+            Write-Log "Configuration backed up successfully" "SUCCESS"
+            return $true
+        }
+        catch {
+            Write-Log "Failed to backup configuration: $_" "ERROR"
+            return $false
+        }
+    }
+    return $true
+}
 
 # 加载或初始化配置
-if (Test-Path $configPath) {
-    $config = Import-Clixml -Path $configPath
-} else {
-    $config = @{
-        Proxies = @{
-            HTTP = @{
-                IP = "127.0.0.1"
-                Port = 7890
-                Enabled = $false
+function Initialize-ProxyConfig {
+    try {
+        if (Test-Path $configPath) {
+            $config = Import-Clixml -Path $configPath
+            
+            # 验证配置文件的完整性
+            if (-not $config.Proxies -or -not $config.Proxies.HTTP -or -not $config.Proxies.HTTPS -or -not $config.Proxies.SOCKS5) {
+                throw "Configuration file is corrupted or incomplete"
             }
-            HTTPS = @{
-                IP = "127.0.0.1"
-                Port = 7890
-                Enabled = $false
+            
+            Write-Log "Configuration loaded from $configPath" "INFO"
+        } else {
+            # 创建默认配置
+            $config = @{
+                Version = "2.0.0"
+                LastModified = (Get-Date)
+                Proxies = @{
+                    HTTP = @{
+                        IP = "127.0.0.1"
+                        Port = 7890
+                        Enabled = $false
+                    }
+                    HTTPS = @{
+                        IP = "127.0.0.1"
+                        Port = 7890
+                        Enabled = $false
+                    }
+                    SOCKS5 = @{
+                        IP = "127.0.0.1"
+                        Port = 7891
+                        Enabled = $false
+                    }
+                }
             }
-            SOCKS5 = @{
-                IP = "127.0.0.1"
-                Port = 7891
-                Enabled = $false
+            Write-Log "Created new default configuration" "INFO"
+        }
+        return $config
+    }
+    catch {
+        Write-Log "Error loading configuration: $_" "ERROR"
+        
+        # 尝试从备份恢复
+        if (Test-Path $backupPath) {
+            Write-Log "Attempting to restore from backup..." "WARN"
+            try {
+                $config = Import-Clixml -Path $backupPath
+                Copy-Item -Path $backupPath -Destination $configPath -Force
+                Write-Log "Configuration restored from backup" "SUCCESS"
+                return $config
+            }
+            catch {
+                Write-Log "Failed to restore from backup: $_" "ERROR"
+            }
+        }
+        
+        # 如果所有恢复尝试失败，返回默认配置
+        Write-Log "Using default configuration" "WARN"
+        return @{
+            Version = "2.0.0"
+            LastModified = (Get-Date)
+            Proxies = @{
+                HTTP = @{
+                    IP = "127.0.0.1"
+                    Port = 7890
+                    Enabled = $false
+                }
+                HTTPS = @{
+                    IP = "127.0.0.1"
+                    Port = 7890
+                    Enabled = $false
+                }
+                SOCKS5 = @{
+                    IP = "127.0.0.1"
+                    Port = 7891
+                    Enabled = $false
+                }
             }
         }
     }
 }
+
+# 初始化配置
+$config = Initialize-ProxyConfig
 
 # 添加特殊工具代理配置函数
 function Set-ToolProxy {
@@ -316,18 +488,79 @@ function Set-ToolProxy {
     
     # npm配置
     try {
-        if ($Enable) {
-            npm config set proxy $proxyUrlWithProtocol
-            npm config set https-proxy $proxyUrlWithProtocol
-            Write-Host "npm proxy configured successfully" -ForegroundColor Green
+        $npmAvailable = Get-Command npm -ErrorAction SilentlyContinue
+        if ($npmAvailable) {
+            if ($Enable) {
+                npm config set proxy $proxyUrlWithProtocol
+                npm config set https-proxy $proxyUrlWithProtocol
+                Write-Log "npm proxy configured successfully" "SUCCESS"
+            } else {
+                npm config delete proxy
+                npm config delete https-proxy
+                Write-Log "npm proxy removed" "SUCCESS"
+            }
         } else {
-            npm config delete proxy
-            npm config delete https-proxy
-            Write-Host "npm proxy removed" -ForegroundColor Yellow
+            Write-Log "npm not found, skipping npm proxy configuration" "WARN"
         }
     }
     catch {
-        Write-Host "Warning: Could not configure npm proxy: $_" -ForegroundColor Yellow
+        Write-Log "Could not configure npm proxy: $_" "WARN"
+    }
+    
+    # pip配置
+    try {
+        $pipAvailable = Get-Command pip -ErrorAction SilentlyContinue
+        if ($pipAvailable) {
+            $pipConfigDir = "$HOME\.pip"
+            $pipConfigFile = "$pipConfigDir\pip.ini"
+            
+            if (-not (Test-Path $pipConfigDir)) {
+                New-Item -ItemType Directory -Path $pipConfigDir -Force | Out-Null
+            }
+            
+            if ($Enable) {
+                $pipConfig = @"
+[global]
+proxy = $proxyUrlWithProtocol
+trusted-host = pypi.org
+               pypi.python.org
+               files.pythonhosted.org
+"@
+                Set-Content -Path $pipConfigFile -Value $pipConfig -Encoding UTF8
+                Write-Log "pip proxy configured successfully" "SUCCESS"
+            } else {
+                if (Test-Path $pipConfigFile) {
+                    Remove-Item -Path $pipConfigFile -Force
+                    Write-Log "pip proxy configuration removed" "SUCCESS"
+                }
+            }
+        } else {
+            Write-Log "pip not found, skipping pip proxy configuration" "WARN"
+        }
+    }
+    catch {
+        Write-Log "Could not configure pip proxy: $_" "WARN"
+    }
+    
+    # yarn配置
+    try {
+        $yarnAvailable = Get-Command yarn -ErrorAction SilentlyContinue
+        if ($yarnAvailable) {
+            if ($Enable) {
+                yarn config set proxy $proxyUrlWithProtocol
+                yarn config set https-proxy $proxyUrlWithProtocol
+                Write-Log "yarn proxy configured successfully" "SUCCESS"
+            } else {
+                yarn config delete proxy
+                yarn config delete https-proxy
+                Write-Log "yarn proxy removed" "SUCCESS"
+            }
+        } else {
+            Write-Log "yarn not found, skipping yarn proxy configuration" "WARN"
+        }
+    }
+    catch {
+        Write-Log "Could not configure yarn proxy: $_" "WARN"
     }
     
     # Docker配置
@@ -376,7 +609,30 @@ function Enable-Proxy {
         [int]$Port
     )
     
+    Write-Log "Enabling $Type proxy: ${IP}:${Port}" "INFO"
+    
+    # 参数验证
+    $validationErrors = Test-ProxyParameters -IP $IP -Port $Port
+    if ($validationErrors.Count -gt 0) {
+        foreach ($error in $validationErrors) {
+            Write-Log $error "ERROR"
+        }
+        return $false
+    }
+    
+    # 测试网络连接
+    if (-not (Test-ProxyConnectivity -IP $IP -Port $Port)) {
+        Write-Log "Warning: Cannot connect to proxy server ${IP}:${Port}" "WARN"
+        $continue = Read-Host "Continue anyway? (y/N)"
+        if ($continue.ToLower() -ne 'y') {
+            Write-Log "Proxy setup cancelled by user" "INFO"
+            return $false
+        }
+    }
+    
     $proxyString = "${Type}://${IP}:${Port}"
+    
+    try {
     
     # 设置 .NET 默认代理配置
     if ($Type.ToLower() -in @("http", "https")) {
@@ -390,7 +646,7 @@ function Enable-Proxy {
             $config.Proxies.HTTP.IP = $IP
             $config.Proxies.HTTP.Port = $Port
             $config.Proxies.HTTP.Enabled = $true
-            Write-Host "HTTP proxy enabled: $proxyString" -ForegroundColor Green
+            Write-Log "HTTP proxy enabled: $proxyString" "SUCCESS"
             # 设置工具代理
             Set-ToolProxy -Type "http" -IP $IP -Port $Port -Enable $true
         }
@@ -400,7 +656,7 @@ function Enable-Proxy {
             $config.Proxies.HTTPS.IP = $IP
             $config.Proxies.HTTPS.Port = $Port
             $config.Proxies.HTTPS.Enabled = $true
-            Write-Host "HTTPS proxy enabled: $proxyString" -ForegroundColor Green
+            Write-Log "HTTPS proxy enabled: $proxyString" "SUCCESS"
             # 设置工具代理
             Set-ToolProxy -Type "https" -IP $IP -Port $Port -Enable $true
         }
@@ -423,11 +679,17 @@ function Enable-Proxy {
             $config.Proxies.SOCKS5.IP = $IP
             $config.Proxies.SOCKS5.Port = $Port
             $config.Proxies.SOCKS5.Enabled = $true
-            Write-Host "SOCKS5 proxy enabled: $proxyString" -ForegroundColor Green
+            Write-Log "SOCKS5 proxy enabled: $proxyString" "SUCCESS"
             Write-Host "Note: For curl, use: curl --socks5-hostname ${IP}:${Port} <url>" -ForegroundColor Yellow
             # 设置工具代理
             Set-ToolProxy -Type "socks5" -IP $IP -Port $Port -Enable $true
         }
+    }
+    
+    return $true
+    } catch {
+        Write-Log "Error enabling $Type proxy: $_" "ERROR"
+        return $false
     }
 }
 
@@ -435,6 +697,10 @@ function Disable-Proxy {
     param(
         [string]$Type
     )
+    
+    Write-Log "Disabling $Type proxy" "INFO"
+    
+    try {
     
     # 禁用 .NET 默认代理配置
     if ($Type.ToLower() -in @("http", "https", "all")) {
@@ -446,7 +712,7 @@ function Disable-Proxy {
             $env:HTTP_PROXY = $null
             $env:http_proxy = $null
             $config.Proxies.HTTP.Enabled = $false
-            Write-Host "HTTP proxy disabled" -ForegroundColor Red
+            Write-Log "HTTP proxy disabled" "SUCCESS"
             # 禁用工具代理
             Set-ToolProxy -Type "http" -IP "" -Port 0 -Enable $false
         }
@@ -454,7 +720,7 @@ function Disable-Proxy {
             $env:HTTPS_PROXY = $null
             $env:https_proxy = $null
             $config.Proxies.HTTPS.Enabled = $false
-            Write-Host "HTTPS proxy disabled" -ForegroundColor Red
+            Write-Log "HTTPS proxy disabled" "SUCCESS"
             # 禁用工具代理
             Set-ToolProxy -Type "https" -IP "" -Port 0 -Enable $false
         }
@@ -475,7 +741,7 @@ function Disable-Proxy {
             }
             
             $config.Proxies.SOCKS5.Enabled = $false
-            Write-Host "SOCKS5 proxy disabled" -ForegroundColor Red
+            Write-Log "SOCKS5 proxy disabled" "SUCCESS"
             # 禁用工具代理
             Set-ToolProxy -Type "socks5" -IP "" -Port 0 -Enable $false
         }
@@ -502,10 +768,16 @@ function Disable-Proxy {
             $config.Proxies.HTTP.Enabled = $false
             $config.Proxies.HTTPS.Enabled = $false
             $config.Proxies.SOCKS5.Enabled = $false
-            Write-Host "All proxies disabled" -ForegroundColor Red
+            Write-Log "All proxies disabled" "SUCCESS"
             # 禁用所有工具代理
             Set-ToolProxy -Type "all" -IP "" -Port 0 -Enable $false
         }
+    }
+    
+    return $true
+    } catch {
+        Write-Log "Error disabling $Type proxy: $_" "ERROR"
+        return $false
     }
 }
 
@@ -840,6 +1112,101 @@ switch ($action.ToLower()) {
 }
 
 # 保存配置
-if (-not $NoSave -and $action -ne "status") {
-    $config | Export-Clixml -Path $configPath -Force
+function Save-ProxyConfig {
+    param(
+        [hashtable]$Config
+    )
+    
+    if (-not $NoSave -and $action -notin @("status", "test", "curltest", "log")) {
+        try {
+            # 备份现有配置
+            Backup-ProxyConfig
+            
+            # 更新修改时间
+            $Config.LastModified = Get-Date
+            
+            # 保存新配置
+            $Config | Export-Clixml -Path $configPath -Force
+            Write-Log "Configuration saved successfully" "SUCCESS"
+            return $true
+        }
+        catch {
+            Write-Log "Failed to save configuration: $_" "ERROR"
+            return $false
+        }
+    }
+    return $true
 }
+
+# 新增命令处理
+switch ($action.ToLower()) {
+    "backup" {
+        if (Backup-ProxyConfig) {
+            Write-Log "Configuration backed up to: $backupPath" "SUCCESS"
+        }
+        exit
+    }
+    
+    "restore" {
+        if (Test-Path $backupPath) {
+            try {
+                Copy-Item -Path $backupPath -Destination $configPath -Force
+                Write-Log "Configuration restored from backup" "SUCCESS"
+                # 重新加载配置
+                $config = Initialize-ProxyConfig
+                Show-Status
+            }
+            catch {
+                Write-Log "Failed to restore configuration: $_" "ERROR"
+            }
+        } else {
+            Write-Log "No backup file found at: $backupPath" "ERROR"
+        }
+        exit
+    }
+    
+    "reset" {
+        try {
+            # 禁用所有代理
+            Disable-Proxy -Type "all"
+            
+            # 删除配置文件
+            if (Test-Path $configPath) {
+                Remove-Item -Path $configPath -Force
+            }
+            
+            # 重新创建默认配置
+            $config = Initialize-ProxyConfig
+            Write-Log "Configuration reset to defaults" "SUCCESS"
+            Show-Status
+        }
+        catch {
+            Write-Log "Failed to reset configuration: $_" "ERROR"
+        }
+        exit
+    }
+    
+    "log" {
+        if (Test-Path $logPath) {
+            Write-Host "`n--- Recent Log Entries ---" -ForegroundColor Cyan
+            Get-Content -Path $logPath -Tail 20 | ForEach-Object {
+                if ($_ -match "\[ERROR\]") {
+                    Write-Host $_ -ForegroundColor Red
+                } elseif ($_ -match "\[WARN\]") {
+                    Write-Host $_ -ForegroundColor Yellow
+                } elseif ($_ -match "\[SUCCESS\]") {
+                    Write-Host $_ -ForegroundColor Green
+                } else {
+                    Write-Host $_
+                }
+            }
+            Write-Host "`nFull log available at: $logPath" -ForegroundColor Cyan
+        } else {
+            Write-Log "No log file found" "WARN"
+        }
+        exit
+    }
+}
+
+# 保存配置
+Save-ProxyConfig -Config $config
