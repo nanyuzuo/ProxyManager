@@ -193,10 +193,24 @@ configure_transparent_proxy() {
     case "$action" in
         enable)
             print_info "配置透明代理..."
-            
+
+            # 检查是否有sudo权限
+            if ! sudo -n true 2>/dev/null; then
+                print_warning "透明代理需要管理员权限"
+                print_info "请输入密码以配置透明代理，或按Ctrl+C取消"
+                if ! sudo true; then
+                    print_error "无法获取管理员权限，透明代理配置失败"
+                    return 1
+                fi
+            fi
+
             # 创建redsocks配置
-            sudo mkdir -p /etc/redsocks
-            sudo cat > /etc/redsocks/redsocks.conf <<EOF
+            if ! sudo mkdir -p /etc/redsocks; then
+                print_error "无法创建redsocks配置目录"
+                return 1
+            fi
+
+            if ! sudo tee /etc/redsocks/redsocks.conf > /dev/null <<EOF
 base {
     log_debug = off;
     log_info = on;
@@ -213,12 +227,28 @@ redsocks {
     type = $proxy_type;
 }
 EOF
+; then
+                print_success "redsocks配置文件创建成功"
+            else
+                print_error "无法创建redsocks配置文件"
+                return 1
+            fi
+
+            # 检查redsocks是否已安装
+            if ! command -v redsocks >/dev/null 2>&1; then
+                print_error "redsocks未安装，请先运行: proxy install-deps"
+                return 1
+            fi
+
+            # 停止可能运行的redsocks实例
+            sudo pkill redsocks 2>/dev/null || true
+            sleep 1
 
             # 启动redsocks
             if sudo redsocks -c /etc/redsocks/redsocks.conf; then
                 print_success "redsocks启动成功"
             else
-                print_error "redsocks启动失败"
+                print_error "redsocks启动失败，请检查配置和端口是否被占用"
                 return 1
             fi
             
@@ -251,23 +281,39 @@ configure_iptables_rules() {
     case "$action" in
         enable)
             print_info "配置iptables透明代理规则..."
-            
+
+            # 检查iptables是否可用
+            if ! command -v iptables >/dev/null 2>&1; then
+                print_error "iptables未安装，透明代理需要iptables支持"
+                return 1
+            fi
+
             # 创建自定义链
-            sudo iptables -t nat -N PROXY_OUT 2>/dev/null || true
-            
+            if sudo iptables -t nat -N PROXY_OUT 2>/dev/null; then
+                print_info "创建自定义iptables链: PROXY_OUT"
+            fi
+
             # 跳过本地地址
-            sudo iptables -t nat -A PROXY_OUT -d 127.0.0.0/8 -j RETURN
-            sudo iptables -t nat -A PROXY_OUT -d 10.0.0.0/8 -j RETURN
-            sudo iptables -t nat -A PROXY_OUT -d 172.16.0.0/12 -j RETURN
-            sudo iptables -t nat -A PROXY_OUT -d 192.168.0.0/16 -j RETURN
-            
+            sudo iptables -t nat -A PROXY_OUT -d 127.0.0.0/8 -j RETURN 2>/dev/null || true
+            sudo iptables -t nat -A PROXY_OUT -d 10.0.0.0/8 -j RETURN 2>/dev/null || true
+            sudo iptables -t nat -A PROXY_OUT -d 172.16.0.0/12 -j RETURN 2>/dev/null || true
+            sudo iptables -t nat -A PROXY_OUT -d 192.168.0.0/16 -j RETURN 2>/dev/null || true
+
             # 重定向到redsocks
-            sudo iptables -t nat -A PROXY_OUT -p tcp -j REDIRECT --to-ports 12345
-            
+            if sudo iptables -t nat -A PROXY_OUT -p tcp -j REDIRECT --to-ports 12345; then
+                print_info "添加TCP流量重定向规则到端口12345"
+            else
+                print_error "无法添加重定向规则"
+                return 1
+            fi
+
             # 应用规则到OUTPUT链
-            sudo iptables -t nat -A OUTPUT -p tcp -j PROXY_OUT
-            
-            print_success "iptables规则配置完成"
+            if sudo iptables -t nat -A OUTPUT -p tcp -j PROXY_OUT; then
+                print_success "iptables规则配置完成"
+            else
+                print_error "无法将规则应用到OUTPUT链"
+                return 1
+            fi
             ;;
             
         disable)
