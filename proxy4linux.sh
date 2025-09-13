@@ -210,7 +210,7 @@ configure_transparent_proxy() {
                 return 1
             fi
 
-            if ! sudo tee /etc/redsocks/redsocks.conf > /dev/null <<EOF
+            if sudo tee /etc/redsocks/redsocks.conf > /dev/null <<EOF; then
 base {
     log_debug = off;
     log_info = on;
@@ -227,7 +227,6 @@ redsocks {
     type = $proxy_type;
 }
 EOF
-; then
                 print_success "redsocks配置文件创建成功"
             else
                 print_error "无法创建redsocks配置文件"
