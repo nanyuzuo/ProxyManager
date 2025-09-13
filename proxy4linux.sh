@@ -84,7 +84,7 @@ CURRENT_HTTP_PROXY=""
 CURRENT_HTTPS_PROXY=""
 CURRENT_SOCKS_PROXY=""
 RULES_ENABLED=false
-LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')
+LAST_UPDATE="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 }
 
@@ -111,7 +111,7 @@ CURRENT_HTTP_PROXY=${CURRENT_HTTP_PROXY:-""}
 CURRENT_HTTPS_PROXY=${CURRENT_HTTPS_PROXY:-""}
 CURRENT_SOCKS_PROXY=${CURRENT_SOCKS_PROXY:-""}
 RULES_ENABLED=${RULES_ENABLED:-false}
-LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')
+LAST_UPDATE="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
 }
 
@@ -830,30 +830,59 @@ install_enhanced_proxy() {
     create_state_file
     create_default_rules
     
-    # 复制脚本
-    cp "$0" "$PROXY_SCRIPT"
+    # 获取当前脚本的绝对路径
+    local main_script_path="$(realpath "$0")"
+
+    # 生成proxy函数脚本
+    cat > "$PROXY_SCRIPT" <<EOL
+#!/bin/bash
+
+# Enhanced Proxy Manager v3.0 - Function Wrapper
+# This script provides the proxy command function
+
+# 全局配置
+PROXY_DIR="\$HOME/.proxy"
+CONFIG_FILE="\$PROXY_DIR/config"
+RULES_FILE="\$PROXY_DIR/rules.conf"
+BACKUP_DIR="\$PROXY_DIR/backup"
+LOG_FILE="\$PROXY_DIR/proxy.log"
+STATE_FILE="\$PROXY_DIR/proxy.state"
+WRAPPER_DIR="\$PROXY_DIR/wrappers"
+
+# 主脚本路径
+main_script_path="$main_script_path"
+
+# proxy命令函数
+proxy() {
+    # 调用主脚本
+    if [[ -f "\$main_script_path" ]]; then
+        bash -c "source '\$main_script_path' && proxy_main \"\\\$@\"" -- "\$@"
+    else
+        echo "错误：找不到主代理脚本: \$main_script_path"
+        return 1
+    fi
+}
+EOL
+
+    # 设置权限
     chmod +x "$PROXY_SCRIPT"
-    
+
     # 检测shell并添加到配置文件
     local shell_type=$(basename "$SHELL")
     local rc_file=""
-    
+
     case $shell_type in
         bash) rc_file="$HOME/.bashrc" ;;
         zsh) rc_file="$HOME/.zshrc" ;;
         *) print_error "不支持的shell: $shell_type"; return 1 ;;
     esac
-    
+
     # 添加到shell配置
-    if ! grep -q "source $PROXY_SCRIPT" "$rc_file" 2>/dev/null; then
+    if ! grep -q "proxy()" "$rc_file" 2>/dev/null; then
         echo -e "\n# Enhanced Proxy Manager v3.0" >> "$rc_file"
-        echo "source $PROXY_SCRIPT" >> "$rc_file"
+        echo "source \"$PROXY_SCRIPT\"" >> "$rc_file"
         echo "export PATH=\"$WRAPPER_DIR:\$PATH\"" >> "$rc_file"
     fi
-    
-    # 立即加载
-    source "$PROXY_SCRIPT"
-    export PATH="$WRAPPER_DIR:$PATH"
     
     print_success "安装完成！"
     print_info "请运行以下命令使配置生效:"
