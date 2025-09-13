@@ -983,7 +983,7 @@ function Show-Help {
 # 主函数
 function Main {
     # 检查直接运行还是作为函数调用
-    if ($MyInvocation.InvocationName -eq ".\proxy4powershell_enhanced.ps1") {
+    if ($MyInvocation.InvocationName -eq ".\proxy4powershell.ps1") {
         # 直接运行脚本 - 显示安装菜单
         Show-InstallationMenu
         return
@@ -1115,7 +1115,7 @@ function Install-EnhancedProxyManager {
         New-Item -Path $modulePath -ItemType Directory -Force | Out-Null
         
         # 复制脚本到模块目录
-        Copy-Item -Path $PSCommandPath -Destination "$modulePath\proxy4powershell_enhanced.ps1" -Force
+        Copy-Item -Path $PSCommandPath -Destination "$modulePath\proxy4powershell.ps1" -Force
         
         # 确保Profile目录存在
         $profileDir = Split-Path $PROFILE -Parent
@@ -1155,7 +1155,7 @@ function proxy {
         [switch]$Help
     )
     
-    & "$env:USERPROFILE\Documents\PowerShell\Modules\EnhancedProxyManager\proxy4powershell_enhanced.ps1" -Action $action -Protocol $protocol -IP $ip -Port $port -NoSave:$NoSave -Transparent:$Transparent -SystemProxy:$SystemProxy -Version:$Version -Help:$Help
+    & "$env:USERPROFILE\Documents\PowerShell\Modules\EnhancedProxyManager\proxy4powershell.ps1" -Action $action -Protocol $protocol -IP $ip -Port $port -NoSave:$NoSave -Transparent:$Transparent -SystemProxy:$SystemProxy -Version:$Version -Help:$Help
 }
 
 # 加载代理包装器

@@ -21,7 +21,7 @@
 
 ```bash
 # 1. 运行增强版安装脚本
-bash proxy4linux_enhanced.sh
+bash proxy4linux.sh
 
 # 2. 选择菜单选项1进行安装
 
@@ -40,7 +40,7 @@ proxy rules init                  # 初始化代理规则
 
 ```powershell
 # 1. 运行增强版安装脚本
-.\proxy4powershell_enhanced.ps1
+.\proxy4powershell.ps1
 
 # 2. 选择菜单选项1进行安装
 
@@ -203,7 +203,7 @@ brew install redsocks
 ### 权限问题
 ```bash
 # Linux需要sudo权限配置iptables
-sudo ./proxy4linux_enhanced.sh
+sudo ./proxy4linux.sh
 ```
 
 ### 代理不生效

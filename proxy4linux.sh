@@ -9,7 +9,7 @@ set -euo pipefail
 
 # 全局配置
 PROXY_DIR="$HOME/.proxy"
-PROXY_SCRIPT="$PROXY_DIR/proxy_enhanced.sh"
+PROXY_SCRIPT="$PROXY_DIR/proxy.sh"
 CONFIG_FILE="$PROXY_DIR/config"
 RULES_FILE="$PROXY_DIR/rules.conf"
 BACKUP_DIR="$PROXY_DIR/backup"
@@ -882,7 +882,7 @@ show_main_menu() {
 # 主程序
 main() {
     # 如果作为proxy命令调用
-    if [[ "${0##*/}" == "proxy_enhanced.sh" ]] && [[ $# -gt 0 ]]; then
+    if [[ "${0##*/}" == "proxy.sh" ]] && [[ $# -gt 0 ]]; then
         proxy_main "$@"
         return $?
     fi
