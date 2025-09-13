@@ -1,185 +1,255 @@
-# Proxy Manager
+# 增强版代理管理器 v3.0
 
-一个用于在命令行界面下灵活便捷设置和切换代理的工具集。支持 Windows PowerShell、Linux 和 macOS 环境。
+**完整终端代理解决方案 - 无需proxychains4！**
 
-## 功能特点
+## 新功能亮点
 
-- 支持 HTTP、HTTPS 和 SOCKS5 代理协议
-- 支持单独设置或同时设置多种代理
-- 支持保存默认配置，方便快速切换
-- 支持查看当前代理状态
-- 支持代理连接测试
-- 支持临时代理设置（不保存配置）
-- 支持对git、npm、pip、docker等常用开发工具代理的自动配置（启用后自动配置）
+### 🚀 核心改进
+- **透明代理支持** - 真正的系统级代理，支持所有应用程序
+- **SOCKS5完整支持** - 包装器和透明代理双重保障
+- **智能命令包装** - 自动为curl、wget等工具添加代理支持
+- **代理规则管理** - 精确控制哪些流量走代理
+- **状态持久化** - 跨终端会话保持代理状态
 
-## 安装说明
+### 💻 平台支持
+- **Linux/macOS**: 基于redsocks + iptables的透明代理
+- **Windows**: 系统代理集成 + 第三方工具支持
 
-### Windows PowerShell
-
-1. 下载 `proxy4powershell.ps1` 到本地
-2. 运行脚本进行安装：
-```powershell
-.\proxy4powershell.ps1
-```
-3. 如果因权限问题不能运行脚本，切换至管理员账户，输入：
-
-   ```powershell
-   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Bypass -Force
-   ```
-
-4. 在弹出的菜单中选择 `1` 进行安装
-
-5. 根据提示重启 PowerShell 或执行 `. $PROFILE` 使配置生效
-
-### Linux/macOS
-
-1. 下载 `proxy4linux.sh` 到本地
-2. 运行脚本进行安装：
-```bash
-bash proxy4linux.sh
-```
-3. 在弹出的菜单中选择 `1` 进行安装
-4. 根据提示执行 `source ~/.bashrc` 或 `source ~/.zshrc` 使配置生效
-
-## 基本用法
+## 安装使用
 
 ### Linux/macOS 版本
 
-#### 命令格式
 ```bash
-proxy <命令> [选项]
+# 1. 运行增强版安装脚本
+bash proxy4linux_enhanced.sh
+
+# 2. 选择菜单选项1进行安装
+
+# 3. 安装透明代理依赖
+proxy install-deps
+
+# 4. 基本使用
+proxy enable --transparent          # 启用透明代理
+proxy enable -p socks5 --ip 127.0.0.1 --port 1080
+proxy status                       # 查看详细状态
+proxy test                        # 测试代理连接
+proxy rules init                  # 初始化代理规则
 ```
-
-#### 可用命令
-- `enable`: 启用代理
-- `disable`: 禁用代理
-- `status`: 显示当前代理状态
-- `setdefault`: 设置默认代理配置
-- `test`: 测试代理连接
-- `--help`: 显示帮助信息
-- `--version`: 显示版本信息
-
-#### 通用选项
-- `-p, --protocol`: 指定协议 (http/https/socks5/all)
-- `--ip`: 指定代理服务器IP地址
-- `--port`: 指定代理服务器端口
-- `--NoSave`: 不保存当前配置（仅用于 enable 命令）
 
 ### Windows PowerShell 版本
 
-#### 命令格式
 ```powershell
-proxy <命令> [-protocol <协议>] [-ip <IP地址>] [-port <端口>] [-NoSave]
+# 1. 运行增强版安装脚本
+.\proxy4powershell_enhanced.ps1
+
+# 2. 选择菜单选项1进行安装
+
+# 3. 基本使用
+proxy enable -SystemProxy         # 启用系统代理
+proxy enable -Protocol socks5 -IP 127.0.0.1 -Port 1080
+proxy status                     # 查看详细状态
+proxy test                      # 测试代理连接
+proxy rules init               # 初始化代理规则
 ```
 
-#### 可用命令
-- `enable`: 启用代理
-- `disable`: 禁用代理
-- `status`: 显示当前代理状态
-- `setdefault`: 设置默认代理配置
-- `test`: 测试代理连接
-- `curltest`: 生成 curl 测试命令
-- `-V` 或 `-version`: 显示版本信息
-- `-h` 或 `-help`: 显示帮助信息
+## 主要特性
 
-#### 通用选项
-- `-protocol`: 指定协议 (http/https/socks5/all)
-- `-ip`: 指定代理服务器IP地址
-- `-port`: 指定代理服务器端口
-- `-NoSave`: 不保存当前配置（仅用于 enable 命令）
-
-#### PowerShell 特有功能
-- Windows 系统代理自动配置（SOCKS5）
-- 内置 curl 命令测试工具
-- 更详细的代理连接测试信息
-- Windows 防火墙相关提示
-
-## 使用示例（以 Clash 为例）
-
-假设 Clash 的默认配置为：
-- HTTP/HTTPS 代理：127.0.0.1:7890
-- SOCKS5 代理：127.0.0.1:7891
-
-### Linux/macOS 环境
+### 1. 透明代理 (Linux/macOS)
+- 使用 `redsocks` 实现真正的透明代理
+- 自动配置 iptables 规则
+- 支持所有TCP流量代理
+- 无需修改应用程序配置
 
 ```bash
-# 设置所有协议的默认代理
-proxy setdefault -p all --ip 127.0.0.1 --port 7890
+# 启用透明代理
+proxy enable --transparent -p socks5 --ip 127.0.0.1 --port 1080
 
-# 单独设置 SOCKS5 代理
-proxy setdefault -p socks5 --ip 127.0.0.1 --port 7891
-
-# 启用所有代理
-proxy enable
-
-# 临时启用 HTTP 代理（不保存配置）
-proxy enable -p http --ip 127.0.0.1 --port 7890 --NoSave
-
-# 查看代理设置情况
-proxy status
-
-# 禁用特定协议代理
-proxy disable -p http
-# 禁用所有协议代理
-proxy disable 
-# 测试代理连接（包含详细信息，返回当前ip以验证是否以实现代理）
-proxy test
+# 所有程序自动通过代理，包括：
+curl https://google.com      # 无需手动配置
+wget https://github.com      # 自动使用代理
+ssh user@server             # SSH连接也走代理
 ```
 
-### Windows PowerShell 环境
+### 2. 智能命令包装器
+- 自动为常用命令添加代理支持
+- 包装器位置：`~/.proxy/wrappers/`
+- 支持 curl、wget 等命令
 
-```powershell
-# 设置所有协议的默认代理
-proxy setdefault -protocol all -ip 127.0.0.1 -port 7890
-
-# 单独设置 SOCKS5 代理
-proxy setdefault -protocol socks5 -ip 127.0.0.1 -port 7891
-
-# 启用所有代理
-proxy enable
-
-# 启用socks5代理
-proxy enable -protocol socks5 
-
-# 临时启用 HTTP 代理（不保存配置）
-proxy enable -protocol http -ip 127.0.0.1 -port 7890 -NoSave
-
-# 查看代理设置情况
-proxy status
-
-# 测试代理连接（包含详细信息，返回当前ip以验证是否以实现代理）
-proxy test
-
-# 生成 curl 测试命令
-proxy curltest
+```bash
+# 包装器会自动检测代理状态
+curl https://httpbin.org/ip  # 自动使用SOCKS5或HTTP代理
+wget https://example.com     # 自动配置代理参数
 ```
 
-## 配置文件位置
+### 3. 代理规则管理
+- 支持域名、IP、端口规则
+- 直连、代理、阻止三种动作
+- 配置文件：`~/.proxy/rules.conf`
 
-- Windows PowerShell: `$HOME\proxyconfig.xml`
-- Linux/macOS: `$HOME/.proxy/config`
+```bash
+# 规则管理
+proxy rules init    # 创建默认规则
+proxy rules list    # 查看当前规则
+proxy rules edit    # 编辑规则文件
 
-## 注意事项
+# 规则格式示例
+DIRECT:domain:*.cn           # 中国域名直连
+PROXY:domain:*.google.com    # Google域名走代理
+BLOCK:domain:*.ads.com       # 阻止广告域名
+```
 
-1. PowerShell 环境下的 SOCKS5 代理会同时设置环境变量和 Windows 系统代理
-2. PowerShell 版本提供更详细的代理测试功能和 curl 命令生成工具
-3. Linux/macOS 版本使用双横线参数（如 `--protocol`），而 PowerShell 版本使用单横线参数（如 `-protocol`）
-4. 某些应用可能需要重启才能识别代理更改
-5. 使用 `--NoSave` 或 `-NoSave` 选项时，修改的配置仅在当前会话有效
-6. 建议先使用 `setdefault` 设置好常用的代理配置
-7. 使用 `status` 命令可以同时查看当前代理状态和默认配置
-8. 代理服务器支持socks5时，应优先使用socks5,提供更好的代理体验
+### 4. 增强工具集成
+- **Git**: 自动配置 http.proxy 和 https.proxy
+- **NPM**: 自动设置 proxy 和 https-proxy
+- **Docker**: 自动配置 daemon 代理
+- **SSH**: 生成 ProxyCommand 配置
+- **浏览器**: 生成启动脚本和配置文件
 
-## 卸载说明
+### 5. 状态管理
+- 持久化状态文件
+- 跨终端会话保持设置
+- 详细的状态显示
 
-### Windows PowerShell
+```bash
+# 查看完整状态
+proxy status
 
-1. 运行脚本：`.\proxy4powershell.ps1`
-2. 在菜单中选择 `2` 进行卸载
-3. 重启 PowerShell 或执行 `. $PROFILE` 使更改生效
+# 输出示例:
+=== 增强代理管理器状态 ===
+
+系统代理状态:
+  HTTP:   http://127.0.0.1:7890
+  HTTPS:  http://127.0.0.1:7890
+  SOCKS5: socks5://127.0.0.1:1080
+
+透明代理: 已启用
+
+工具代理状态:
+  Git:    http://127.0.0.1:7890
+  NPM:    http://127.0.0.1:7890
+
+最后更新: 2025-01-15 14:30:25
+```
+
+## 与 proxychains4 的对比
+
+| 功能 | proxychains4 | 增强版代理管理器 |
+|------|-------------|-----------------|
+| 透明代理 | ❌ 需要前缀命令 | ✅ 真正透明代理 |
+| 系统集成 | ❌ 应用程序单独配置 | ✅ 自动配置常用工具 |
+| 规则管理 | ❌ 基本配置 | ✅ 完整规则系统 |
+| 状态管理 | ❌ 无状态 | ✅ 持久化状态 |
+| Windows支持 | ❌ Linux/macOS only | ✅ 跨平台支持 |
+| 易用性 | ❌ 需要学习配置 | ✅ 开箱即用 |
+
+## 使用场景
+
+### 1. 开发环境
+```bash
+# 一键启用开发代理
+proxy enable --transparent
+# Git、NPM、Docker等工具自动配置完成
+git clone https://github.com/user/repo  # 自动走代理
+npm install                             # 自动走代理
+```
+
+### 2. 服务器管理
+```bash
+# 临时代理访问
+proxy enable --NoSave -p socks5 --ip proxy-server --port 1080
+ssh user@target-server  # SSH连接走代理
+```
+
+### 3. 网络测试
+```bash
+# 测试代理连通性
+proxy test
+# 查看代理后的IP
+curl https://ip.sb
+```
+
+## 依赖要求
 
 ### Linux/macOS
+- bash 4.0+
+- curl
+- redsocks (透明代理)
+- iptables (透明代理)
+- git, npm, docker (可选)
 
-1. 运行脚本：`./proxy4linux.sh`
-2. 在菜单中选择 `2` 进行卸载
-3. 重启终端或重新加载配置文件使更改生效
+### Windows
+- PowerShell 5.0+
+- curl (Windows 10+自带)
+- git, npm, docker (可选)
+
+## 故障排除
+
+### 透明代理无法启动
+```bash
+# 检查redsocks安装
+which redsocks
+
+# 手动安装redsocks
+# Ubuntu/Debian
+sudo apt-get install redsocks
+
+# CentOS/RHEL
+sudo yum install redsocks
+
+# macOS
+brew install redsocks
+```
+
+### 权限问题
+```bash
+# Linux需要sudo权限配置iptables
+sudo ./proxy4linux_enhanced.sh
+```
+
+### 代理不生效
+```bash
+# 检查环境变量
+env | grep -i proxy
+
+# 检查状态
+proxy status
+
+# 重新加载shell配置
+source ~/.bashrc  # 或 source ~/.zshrc
+```
+
+## 高级配置
+
+### 自定义规则文件
+编辑 `~/.proxy/rules.conf`:
+```
+# 企业内网直连
+DIRECT:ip:10.0.0.0/8
+DIRECT:domain:*.company.com
+
+# 开发工具走代理
+PROXY:domain:*.github.com
+PROXY:domain:*.npmjs.org
+PROXY:domain:*.docker.io
+
+# 阻止恶意域名
+BLOCK:domain:*.malware.com
+```
+
+### 多代理配置
+```bash
+# 设置不同协议的代理
+proxy setdefault -p http --ip proxy1.com --port 8080
+proxy setdefault -p socks5 --ip proxy2.com --port 1080
+
+# 启用特定协议
+proxy enable -p socks5
+```
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request 来改进这个项目！
+
+## 许可证
+
+本项目基于原版代理管理器进行增强，保持开源精神。

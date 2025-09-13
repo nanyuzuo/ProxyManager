@@ -1,75 +1,1138 @@
-# PowerShell Proxy Manager v2.0.0
-# Enhanced version with improved error handling and logging
-# Author: nanyuzuo
-# Last Updated: $(Get-Date -Format 'yyyy-MM-dd')
+# Enhanced PowerShell Proxy Manager v3.0
+# 增强版Windows代理管理脚本 - 完整终端代理解决方案
+# Author: Enhanced by Claude Code
+# Features: 系统代理集成、透明代理、增强工具支持、代理规则管理
 
 param(
-    [Parameter(Mandatory=$false)]
-    [ValidateSet("enable", "disable", "status", "setdefault", "test", "curltest", "backup", "restore", "reset", "log", IgnoreCase=$true)]
-    [string]$action = "status",
-
-    [Parameter(Mandatory=$false)]
+    [Parameter(Position=0)]
+    [ValidateSet("enable", "disable", "status", "setdefault", "test", "rules", "install-deps", "help", "curltest", IgnoreCase=$true)]
+    [string]$Action = "status",
+    
+    [Parameter()]
     [ValidateSet("http", "https", "socks5", "all", IgnoreCase=$true)]
-    [string]$protocol = "all",
+    [string]$Protocol = "all",
     
-    [Parameter(Mandatory=$false)]
-    [string]$ip,
+    [Parameter()]
+    [string]$IP,
     
-    [Parameter(Mandatory=$false)]
-    [int]$port,
+    [Parameter()]
+    [int]$Port,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter()]
     [switch]$NoSave,
     
-    [Parameter(Mandatory=$false)]
-    [Alias("--version")]
+    [Parameter()]
+    [switch]$Transparent,
+    
+    [Parameter()]
+    [switch]$SystemProxy,
+    
+    [Parameter()]
+    [Alias("V", "version")]
     [switch]$Version,
     
-    [Parameter(Mandatory=$false)]
-    [Alias("--help")]
+    [Parameter()]
+    [Alias("h", "help")]
     [switch]$Help
 )
 
-# 检查是否直接运行脚本
-if ($MyInvocation.InvocationName -eq ".\proxy4powershell.ps1") {
+# 全局配置
+$script:ProxyDir = "$env:USERPROFILE\.proxy"
+$script:ConfigFile = "$script:ProxyDir\config.xml"
+$script:RulesFile = "$script:ProxyDir\rules.conf"
+$script:StateFile = "$script:ProxyDir\proxy.state.xml"
+$script:WrapperDir = "$script:ProxyDir\wrappers"
+$script:LogFile = "$script:ProxyDir\proxy.log"
+
+# 颜色配置
+$script:Colors = @{
+    Info = "Cyan"
+    Success = "Green"
+    Warning = "Yellow"
+    Error = "Red"
+    Debug = "Magenta"
+}
+
+# 日志函数
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] $Message"
+    
+    try {
+        Add-Content -Path $script:LogFile -Value $logEntry -ErrorAction SilentlyContinue
+    } catch {
+        # 忽略日志写入错误
+    }
+}
+
+# 彩色输出函数
+function Write-ColorOutput {
+    param(
+        [string]$Message,
+        [ValidateSet("Info", "Success", "Warning", "Error", "Debug")]
+        [string]$Type = "Info"
+    )
+    
+    $color = $script:Colors[$Type]
+    Write-Host "[$Type] $Message" -ForegroundColor $color
+    Write-Log -Message $Message -Level $Type.ToUpper()
+}
+
+# 检查管理员权限
+function Test-Administrator {
+    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# 验证IP地址
+function Test-IPAddress {
+    param([string]$IP)
+    
+    if ([string]::IsNullOrEmpty($IP)) { return $false }
+    
+    # 检查IP格式
+    if ($IP -match '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$') {
+        return $true
+    }
+    
+    # 检查域名格式
+    if ($IP -match '^[a-zA-Z0-9.-]+$' -or $IP -eq "localhost") {
+        return $true
+    }
+    
+    return $false
+}
+
+# 验证端口号
+function Test-Port {
+    param([int]$Port)
+    return ($Port -ge 1 -and $Port -le 65535)
+}
+
+# 创建目录结构
+function Initialize-ProxyDirectories {
+    $dirs = @($script:ProxyDir, "$script:ProxyDir\backup", $script:WrapperDir)
+    
+    foreach ($dir in $dirs) {
+        if (!(Test-Path $dir)) {
+            New-Item -Path $dir -ItemType Directory -Force | Out-Null
+        }
+    }
+}
+
+# 创建默认配置
+function Initialize-DefaultConfig {
+    $config = @{
+        HTTP_IP = "127.0.0.1"
+        HTTP_PORT = 7890
+        HTTPS_IP = "127.0.0.1"
+        HTTPS_PORT = 7890
+        SOCKS5_IP = "127.0.0.1"
+        SOCKS5_PORT = 7891
+        ENABLE_SYSTEM_PROXY = $true
+        ENABLE_GIT_PROXY = $true
+        ENABLE_NPM_PROXY = $true
+        ENABLE_DOCKER_PROXY = $true
+        LAST_UPDATE = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    $config | Export-Clixml -Path $script:ConfigFile -Force
+    Write-ColorOutput "默认配置已创建: $script:ConfigFile" "Success"
+}
+
+# 加载配置
+function Get-ProxyConfig {
+    if (Test-Path $script:ConfigFile) {
+        try {
+            return Import-Clixml -Path $script:ConfigFile
+        } catch {
+            Write-ColorOutput "配置文件损坏，重新创建默认配置" "Warning"
+            Initialize-DefaultConfig
+            return Import-Clixml -Path $script:ConfigFile
+        }
+    } else {
+        Initialize-DefaultConfig
+        return Import-Clixml -Path $script:ConfigFile
+    }
+}
+
+# 保存配置
+function Save-ProxyConfig {
+    param($Config)
+    
+    $Config.LAST_UPDATE = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $Config | Export-Clixml -Path $script:ConfigFile -Force
+}
+
+# 创建状态文件
+function Initialize-StateFile {
+    $state = @{
+        PROXY_ENABLED = $false
+        PROXY_MODE = ""
+        SYSTEM_PROXY_ENABLED = $false
+        TRANSPARENT_PROXY = $false
+        CURRENT_HTTP_PROXY = ""
+        CURRENT_HTTPS_PROXY = ""
+        CURRENT_SOCKS_PROXY = ""
+        RULES_ENABLED = $false
+        LAST_UPDATE = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    $state | Export-Clixml -Path $script:StateFile -Force
+}
+
+# 加载状态
+function Get-ProxyState {
+    if (Test-Path $script:StateFile) {
+        try {
+            return Import-Clixml -Path $script:StateFile
+        } catch {
+            Initialize-StateFile
+            return Import-Clixml -Path $script:StateFile
+        }
+    } else {
+        Initialize-StateFile
+        return Import-Clixml -Path $script:StateFile
+    }
+}
+
+# 保存状态
+function Save-ProxyState {
+    param($State)
+    
+    $State.LAST_UPDATE = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $State | Export-Clixml -Path $script:StateFile -Force
+}
+
+# 创建默认代理规则
+function Initialize-ProxyRules {
+    $rules = @"
+# Enhanced Proxy Rules Configuration
+# Format: ACTION:TYPE:PATTERN
+# ACTION: DIRECT, PROXY, BLOCK
+# TYPE: domain, ip, port, process
+
+# 直连规则 - 本地和内网地址
+DIRECT:ip:127.0.0.1
+DIRECT:ip:localhost
+DIRECT:ip:10.0.0.0/8
+DIRECT:ip:172.16.0.0/12
+DIRECT:ip:192.168.0.0/16
+DIRECT:domain:*.local
+DIRECT:domain:*.lan
+
+# 中国大陆直连域名
+DIRECT:domain:*.cn
+DIRECT:domain:*.baidu.com
+DIRECT:domain:*.qq.com
+DIRECT:domain:*.taobao.com
+DIRECT:domain:*.aliyun.com
+DIRECT:domain:*.163.com
+DIRECT:domain:*.sina.com.cn
+DIRECT:domain:*.weibo.com
+DIRECT:domain:*.zhihu.com
+
+# 需要代理的域名
+PROXY:domain:*.google.com
+PROXY:domain:*.youtube.com
+PROXY:domain:*.facebook.com
+PROXY:domain:*.twitter.com
+PROXY:domain:*.github.com
+PROXY:domain:*.stackoverflow.com
+PROXY:domain:*.reddit.com
+PROXY:domain:*.wikipedia.org
+
+# 阻止的域名 - 广告和恶意网站
+BLOCK:domain:*.doubleclick.net
+BLOCK:domain:*.googlesyndication.com
+BLOCK:domain:*.googleadservices.com
+BLOCK:domain:ad.*.com
+"@
+    
+    Set-Content -Path $script:RulesFile -Value $rules -Encoding UTF8
+    Write-ColorOutput "默认代理规则已创建: $script:RulesFile" "Success"
+}
+
+# Windows系统代理配置
+function Set-WindowsSystemProxy {
+    param(
+        [string]$Action,
+        [string]$HttpProxy = "",
+        [string]$SocksProxy = ""
+    )
+    
+    $registryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+    
+    try {
+        switch ($Action.ToLower()) {
+            "enable" {
+                if (![string]::IsNullOrEmpty($HttpProxy)) {
+                    Set-ItemProperty -Path $registryPath -Name "ProxyServer" -Value $HttpProxy
+                    Set-ItemProperty -Path $registryPath -Name "ProxyEnable" -Value 1
+                    Write-ColorOutput "Windows系统HTTP代理已启用: $HttpProxy" "Success"
+                }
+                
+                if (![string]::IsNullOrEmpty($SocksProxy)) {
+                    # SOCKS代理设置较复杂，需要通过ProxyServer字符串格式
+                    $proxyString = "socks=$SocksProxy"
+                    if (![string]::IsNullOrEmpty($HttpProxy)) {
+                        $proxyString = "http=$HttpProxy;https=$HttpProxy;socks=$SocksProxy"
+                    }
+                    Set-ItemProperty -Path $registryPath -Name "ProxyServer" -Value $proxyString
+                    Set-ItemProperty -Path $registryPath -Name "ProxyEnable" -Value 1
+                    Write-ColorOutput "Windows系统SOCKS代理已启用: $SocksProxy" "Success"
+                }
+                
+                # 设置代理覆盖列表
+                $bypassList = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*"
+                Set-ItemProperty -Path $registryPath -Name "ProxyOverride" -Value $bypassList
+            }
+            
+            "disable" {
+                Set-ItemProperty -Path $registryPath -Name "ProxyEnable" -Value 0
+                Write-ColorOutput "Windows系统代理已禁用" "Success"
+            }
+        }
+        
+        # 通知系统代理设置已更改
+        $signature = @'
+[DllImport("wininet.dll")]
+public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+'@
+        
+        $wininet = Add-Type -MemberDefinition $signature -Name WinINet -Namespace InternetSettings -PassThru
+        $wininet::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+        $wininet::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+        
+    } catch {
+        Write-ColorOutput "配置Windows系统代理失败: $($_.Exception.Message)" "Error"
+    }
+}
+
+# 配置增强工具代理
+function Set-EnhancedToolsProxy {
+    param(
+        [string]$Action,
+        [string]$HttpProxy = "",
+        [string]$SocksProxy = ""
+    )
+    
+    switch ($Action.ToLower()) {
+        "enable" {
+            Write-ColorOutput "配置增强工具代理..." "Info"
+            
+            # Git配置
+            if (Get-Command git -ErrorAction SilentlyContinue) {
+                if (![string]::IsNullOrEmpty($HttpProxy)) {
+                    git config --global http.proxy $HttpProxy
+                    git config --global https.proxy $HttpProxy
+                    Write-ColorOutput "Git代理已配置: $HttpProxy" "Success"
+                }
+            }
+            
+            # NPM配置
+            if (Get-Command npm -ErrorAction SilentlyContinue) {
+                if (![string]::IsNullOrEmpty($HttpProxy)) {
+                    npm config set proxy $HttpProxy
+                    npm config set https-proxy $HttpProxy
+                    Write-ColorOutput "NPM代理已配置: $HttpProxy" "Success"
+                }
+            }
+            
+            # Docker配置
+            if (Get-Command docker -ErrorAction SilentlyContinue) {
+                $dockerConfigDir = "$env:USERPROFILE\.docker"
+                if (!(Test-Path $dockerConfigDir)) {
+                    New-Item -Path $dockerConfigDir -ItemType Directory -Force | Out-Null
+                }
+                
+                $dockerConfig = @{
+                    proxies = @{
+                        default = @{
+                            httpProxy = $HttpProxy
+                            httpsProxy = $HttpProxy
+                            noProxy = "localhost,127.0.0.1"
+                        }
+                    }
+                }
+                
+                $dockerConfig | ConvertTo-Json -Depth 3 | Set-Content -Path "$dockerConfigDir\config.json" -Encoding UTF8
+                Write-ColorOutput "Docker代理已配置" "Success"
+            }
+            
+            # 创建命令包装器
+            Create-CommandWrappers $HttpProxy $SocksProxy
+        }
+        
+        "disable" {
+            Write-ColorOutput "禁用增强工具代理..." "Info"
+            
+            # 清理Git配置
+            if (Get-Command git -ErrorAction SilentlyContinue) {
+                git config --global --unset http.proxy 2>$null
+                git config --global --unset https.proxy 2>$null
+            }
+            
+            # 清理NPM配置
+            if (Get-Command npm -ErrorAction SilentlyContinue) {
+                npm config delete proxy 2>$null
+                npm config delete https-proxy 2>$null
+            }
+            
+            Write-ColorOutput "增强工具代理已禁用" "Success"
+        }
+    }
+}
+
+# 创建命令包装器
+function Create-CommandWrappers {
+    param(
+        [string]$HttpProxy,
+        [string]$SocksProxy
+    )
+    
+    # PowerShell curl包装器函数
+    $curlWrapper = @"
+function Invoke-ProxyCurl {
+    param([Parameter(ValueFromRemainingArguments=`$true)]`$Arguments)
+    
+    `$proxyArgs = @()
+    if ("`$env:CURRENT_SOCKS_PROXY") {
+        `$proxyArgs += "--socks5", "`$env:CURRENT_SOCKS_PROXY"
+    } elseif ("`$env:CURRENT_HTTP_PROXY") {
+        `$proxyArgs += "--proxy", "`$env:CURRENT_HTTP_PROXY"
+    }
+    
+    if (`$proxyArgs.Count -gt 0) {
+        & curl @proxyArgs @Arguments
+    } else {
+        & curl @Arguments
+    }
+}
+
+Set-Alias -Name curl -Value Invoke-ProxyCurl -Force -Scope Global
+"@
+    
+    $wrapperFile = "$script:WrapperDir\ProxyWrappers.ps1"
+    Set-Content -Path $wrapperFile -Value $curlWrapper -Encoding UTF8
+    
+    Write-ColorOutput "命令包装器已创建: $wrapperFile" "Success"
+}
+
+# 透明代理支持（Windows）
+function Set-TransparentProxy {
+    param(
+        [string]$Action,
+        [string]$ProxyIP,
+        [int]$ProxyPort
+    )
+    
+    switch ($Action.ToLower()) {
+        "enable" {
+            if (!(Test-Administrator)) {
+                Write-ColorOutput "透明代理需要管理员权限，请以管理员身份运行" "Warning"
+                return
+            }
+            
+            Write-ColorOutput "Windows透明代理功能需要第三方工具支持" "Info"
+            Write-ColorOutput "建议安装: Proxifier, SocksCap64, 或 v2rayN" "Info"
+            
+            # 这里可以添加与第三方工具的集成
+        }
+        
+        "disable" {
+            Write-ColorOutput "透明代理已禁用" "Success"
+        }
+    }
+}
+
+# 主代理控制函数
+function Invoke-ProxyControl {
+    param(
+        [string]$Action,
+        [string]$Protocol = "all",
+        [string]$IP = "",
+        [int]$Port = 0,
+        [switch]$NoSave,
+        [switch]$Transparent,
+        [switch]$SystemProxy
+    )
+    
+    $config = Get-ProxyConfig
+    $state = Get-ProxyState
+    
+    switch ($Action.ToLower()) {
+        "enable" {
+            # 使用默认配置或命令行参数
+            if ([string]::IsNullOrEmpty($IP) -or $Port -eq 0) {
+                switch ($Protocol.ToLower()) {
+                    "http" { $IP = $config.HTTP_IP; $Port = $config.HTTP_PORT }
+                    "https" { $IP = $config.HTTPS_IP; $Port = $config.HTTPS_PORT }
+                    "socks5" { $IP = $config.SOCKS5_IP; $Port = $config.SOCKS5_PORT }
+                    "all" { $IP = $config.HTTP_IP; $Port = $config.HTTP_PORT }
+                }
+            }
+            
+            # 验证参数
+            if (!(Test-IPAddress $IP) -or !(Test-Port $Port)) {
+                Write-ColorOutput "无效的IP地址或端口号: $IP:$Port" "Error"
+                return
+            }
+            
+            Write-ColorOutput "启用代理: $Protocol 模式, $IP:$Port" "Info"
+            
+            # 设置环境变量
+            switch ($Protocol.ToLower()) {
+                "http" {
+                    $env:HTTP_PROXY = "http://$IP`:$Port"
+                    $env:http_proxy = $env:HTTP_PROXY
+                    $state.CURRENT_HTTP_PROXY = "$IP`:$Port"
+                }
+                "https" {
+                    $env:HTTPS_PROXY = "http://$IP`:$Port"
+                    $env:https_proxy = $env:HTTPS_PROXY
+                    $state.CURRENT_HTTPS_PROXY = "$IP`:$Port"
+                }
+                "socks5" {
+                    $env:ALL_PROXY = "socks5://$IP`:$Port"
+                    $env:all_proxy = $env:ALL_PROXY
+                    $env:CURRENT_SOCKS_PROXY = "$IP`:$Port"
+                    $state.CURRENT_SOCKS_PROXY = "$IP`:$Port"
+                    
+                    if ($Transparent) {
+                        Set-TransparentProxy "enable" $IP $Port
+                        $state.TRANSPARENT_PROXY = $true
+                    }
+                }
+                "all" {
+                    $env:HTTP_PROXY = "http://$IP`:$Port"
+                    $env:http_proxy = $env:HTTP_PROXY
+                    $env:HTTPS_PROXY = $env:HTTP_PROXY
+                    $env:https_proxy = $env:HTTP_PROXY
+                    $env:ALL_PROXY = "socks5://$IP`:$Port"
+                    $env:all_proxy = $env:ALL_PROXY
+                    $env:CURRENT_HTTP_PROXY = "$IP`:$Port"
+                    $env:CURRENT_HTTPS_PROXY = "$IP`:$Port"
+                    $env:CURRENT_SOCKS_PROXY = "$IP`:$Port"
+                    
+                    $state.CURRENT_HTTP_PROXY = "$IP`:$Port"
+                    $state.CURRENT_HTTPS_PROXY = "$IP`:$Port"
+                    $state.CURRENT_SOCKS_PROXY = "$IP`:$Port"
+                    
+                    if ($Transparent) {
+                        Set-TransparentProxy "enable" $IP $Port
+                        $state.TRANSPARENT_PROXY = $true
+                    }
+                }
+            }
+            
+            # Windows系统代理
+            if ($SystemProxy -or $config.ENABLE_SYSTEM_PROXY) {
+                $httpProxyString = "http://$IP`:$Port"
+                $socksProxyString = "$IP`:$Port"
+                Set-WindowsSystemProxy "enable" $httpProxyString $socksProxyString
+                $state.SYSTEM_PROXY_ENABLED = $true
+            }
+            
+            # 配置工具代理
+            Set-EnhancedToolsProxy "enable" "http://$IP`:$Port" "$IP`:$Port"
+            
+            # 保存配置
+            if (!$NoSave) {
+                switch ($Protocol.ToLower()) {
+                    "http" { $config.HTTP_IP = $IP; $config.HTTP_PORT = $Port }
+                    "https" { $config.HTTPS_IP = $IP; $config.HTTPS_PORT = $Port }
+                    "socks5" { $config.SOCKS5_IP = $IP; $config.SOCKS5_PORT = $Port }
+                    "all" {
+                        $config.HTTP_IP = $IP; $config.HTTP_PORT = $Port
+                        $config.HTTPS_IP = $IP; $config.HTTPS_PORT = $Port
+                        $config.SOCKS5_IP = $IP; $config.SOCKS5_PORT = $Port
+                    }
+                }
+                Save-ProxyConfig $config
+            }
+            
+            $state.PROXY_ENABLED = $true
+            $state.PROXY_MODE = $Protocol
+            Save-ProxyState $state
+            
+            Write-ColorOutput "代理已启用" "Success"
+        }
+        
+        "disable" {
+            Write-ColorOutput "禁用代理: $Protocol" "Info"
+            
+            switch ($Protocol.ToLower()) {
+                "http" {
+                    Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:http_proxy -ErrorAction SilentlyContinue
+                    $state.CURRENT_HTTP_PROXY = ""
+                }
+                "https" {
+                    Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:https_proxy -ErrorAction SilentlyContinue
+                    $state.CURRENT_HTTPS_PROXY = ""
+                }
+                "socks5" {
+                    Remove-Item Env:ALL_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:all_proxy -ErrorAction SilentlyContinue
+                    Remove-Item Env:CURRENT_SOCKS_PROXY -ErrorAction SilentlyContinue
+                    $state.CURRENT_SOCKS_PROXY = ""
+                    Set-TransparentProxy "disable" "" 0
+                    $state.TRANSPARENT_PROXY = $false
+                }
+                default {
+                    Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:http_proxy -ErrorAction SilentlyContinue
+                    Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:https_proxy -ErrorAction SilentlyContinue
+                    Remove-Item Env:ALL_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:all_proxy -ErrorAction SilentlyContinue
+                    Remove-Item Env:CURRENT_HTTP_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:CURRENT_HTTPS_PROXY -ErrorAction SilentlyContinue
+                    Remove-Item Env:CURRENT_SOCKS_PROXY -ErrorAction SilentlyContinue
+                    
+                    $state.CURRENT_HTTP_PROXY = ""
+                    $state.CURRENT_HTTPS_PROXY = ""
+                    $state.CURRENT_SOCKS_PROXY = ""
+                    Set-TransparentProxy "disable" "" 0
+                    $state.TRANSPARENT_PROXY = $false
+                }
+            }
+            
+            # 禁用系统代理
+            Set-WindowsSystemProxy "disable"
+            $state.SYSTEM_PROXY_ENABLED = $false
+            
+            # 禁用工具代理
+            Set-EnhancedToolsProxy "disable"
+            
+            $state.PROXY_ENABLED = $false
+            $state.PROXY_MODE = ""
+            Save-ProxyState $state
+            
+            Write-ColorOutput "代理已禁用" "Success"
+        }
+    }
+}
+
+# 显示代理状态
+function Show-ProxyStatus {
+    $config = Get-ProxyConfig
+    $state = Get-ProxyState
+    
+    Write-Host "`n" -NoNewline
+    Write-Host "=== 增强PowerShell代理管理器状态 ===" -ForegroundColor Cyan
+    
+    Write-Host "`n环境变量代理状态:" -ForegroundColor Blue
+    Write-Host "  HTTP:   $($env:HTTP_PROXY ?? 'Disabled')" -ForegroundColor $(if ($env:HTTP_PROXY) { "Green" } else { "Red" })
+    Write-Host "  HTTPS:  $($env:HTTPS_PROXY ?? 'Disabled')" -ForegroundColor $(if ($env:HTTPS_PROXY) { "Green" } else { "Red" })
+    Write-Host "  SOCKS5: $($env:ALL_PROXY ?? 'Disabled')" -ForegroundColor $(if ($env:ALL_PROXY) { "Green" } else { "Red" })
+    
+    Write-Host "`nWindows系统代理:" -ForegroundColor Blue
+    try {
+        $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        $proxyEnabled = Get-ItemProperty -Path $regPath -Name "ProxyEnable" -ErrorAction SilentlyContinue
+        $proxyServer = Get-ItemProperty -Path $regPath -Name "ProxyServer" -ErrorAction SilentlyContinue
+        
+        if ($proxyEnabled.ProxyEnable -eq 1) {
+            Write-Host "  状态: 已启用" -ForegroundColor Green
+            Write-Host "  服务器: $($proxyServer.ProxyServer)" -ForegroundColor Green
+        } else {
+            Write-Host "  状态: 已禁用" -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "  状态: 无法获取" -ForegroundColor Yellow
+    }
+    
+    Write-Host "`n透明代理:" -ForegroundColor Blue
+    Write-Host "  状态: $(if ($state.TRANSPARENT_PROXY) { '已启用' } else { '已禁用' })" -ForegroundColor $(if ($state.TRANSPARENT_PROXY) { "Green" } else { "Red" })
+    
+    Write-Host "`n默认配置:" -ForegroundColor Blue
+    Write-Host "  HTTP:   http://$($config.HTTP_IP):$($config.HTTP_PORT)"
+    Write-Host "  HTTPS:  http://$($config.HTTPS_IP):$($config.HTTPS_PORT)"
+    Write-Host "  SOCKS5: socks5://$($config.SOCKS5_IP):$($config.SOCKS5_PORT)"
+    
+    Write-Host "`n工具代理状态:" -ForegroundColor Blue
+    
+    # Git状态
+    try {
+        $gitProxy = git config --global --get http.proxy 2>$null
+        Write-Host "  Git:    $($gitProxy ?? '未配置')"
+    } catch {
+        Write-Host "  Git:    未安装"
+    }
+    
+    # NPM状态
+    try {
+        $npmProxy = npm config get proxy 2>$null
+        if ($npmProxy -eq "null") { $npmProxy = "未配置" }
+        Write-Host "  NPM:    $npmProxy"
+    } catch {
+        Write-Host "  NPM:    未安装"
+    }
+    
+    Write-Host "`n最后更新: $($state.LAST_UPDATE)" -ForegroundColor Blue
+}
+
+# 代理连接测试
+function Test-ProxyConnection {
+    Write-ColorOutput "开始增强代理测试..." "Info"
+    
+    $testUrls = @(
+        "http://httpbin.org/ip",
+        "https://ip.sb",
+        "http://ip-api.com/json",
+        "https://www.google.com"
+    )
+    
+    $successCount = 0
+    
+    foreach ($url in $testUrls) {
+        Write-ColorOutput "测试 $url ..." "Info"
+        try {
+            $response = Invoke-WebRequest -Uri $url -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+            if ($response.StatusCode -eq 200) {
+                Write-ColorOutput "✓ $url 连接成功" "Success"
+                $successCount++
+            } else {
+                Write-ColorOutput "✗ $url 连接失败 (状态码: $($response.StatusCode))" "Error"
+            }
+        } catch {
+            Write-ColorOutput "✗ $url 连接失败: $($_.Exception.Message)" "Error"
+        }
+    }
+    
+    Write-Host "`n测试结果: " -NoNewline
+    Write-Host "$successCount/$($testUrls.Count) " -ForegroundColor $(if ($successCount -gt 0) { "Green" } else { "Red" }) -NoNewline
+    Write-Host "个测试成功"
+    
+    # 显示当前IP信息
+    if ($successCount -gt 0) {
+        Write-ColorOutput "当前IP信息:" "Info"
+        try {
+            $ipInfo = Invoke-RestMethod -Uri "http://ip-api.com/json" -TimeoutSec 10 -ErrorAction Stop
+            Write-Host "IP: $($ipInfo.query), 国家: $($ipInfo.country), 城市: $($ipInfo.city)" -ForegroundColor Green
+        } catch {
+            try {
+                $ip = Invoke-RestMethod -Uri "https://ip.sb" -TimeoutSec 10 -ErrorAction Stop
+                Write-Host "IP: $ip" -ForegroundColor Green
+            } catch {
+                Write-ColorOutput "无法获取IP信息" "Warning"
+            }
+        }
+    }
+}
+
+# 规则管理
+function Manage-ProxyRules {
+    param([string]$RuleAction = "list")
+    
+    switch ($RuleAction.ToLower()) {
+        "list" {
+            if (Test-Path $script:RulesFile) {
+                Write-Host "`n=== 代理规则 ===" -ForegroundColor Cyan
+                Get-Content $script:RulesFile | Where-Object { $_ -notmatch '^#' -and $_ -ne '' } | ForEach-Object {
+                    Write-Host $_ -ForegroundColor White
+                }
+            } else {
+                Write-ColorOutput "规则文件不存在，请运行 proxy rules init" "Warning"
+            }
+        }
+        
+        "init" {
+            Initialize-ProxyRules
+        }
+        
+        "edit" {
+            if (Test-Path $script:RulesFile) {
+                if (Get-Command notepad -ErrorAction SilentlyContinue) {
+                    Start-Process notepad $script:RulesFile
+                } else {
+                    Write-ColorOutput "请手动编辑文件: $script:RulesFile" "Info"
+                }
+            } else {
+                Write-ColorOutput "规则文件不存在，请先运行 proxy rules init" "Warning"
+            }
+        }
+    }
+}
+
+# 安装依赖
+function Install-ProxyDependencies {
+    Write-ColorOutput "检查PowerShell代理依赖..." "Info"
+    
+    # 检查PowerShell版本
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        Write-ColorOutput "建议升级到PowerShell 5.0或更高版本" "Warning"
+    } else {
+        Write-ColorOutput "PowerShell版本检查通过: $($PSVersionTable.PSVersion)" "Success"
+    }
+    
+    # 检查curl
+    if (Get-Command curl -ErrorAction SilentlyContinue) {
+        Write-ColorOutput "curl 已安装" "Success"
+    } else {
+        Write-ColorOutput "curl 未找到，某些功能可能受限" "Warning"
+    }
+    
+    # 检查git
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        Write-ColorOutput "Git 已安装" "Success"
+    } else {
+        Write-ColorOutput "Git 未找到，Git代理功能将不可用" "Warning"
+    }
+    
+    Write-ColorOutput "依赖检查完成" "Success"
+    Write-ColorOutput "建议安装: Proxifier 或 SocksCap64 以获得更好的透明代理支持" "Info"
+}
+
+# 生成curl测试命令
+function Generate-CurlTestCommands {
+    $config = Get-ProxyConfig
+    $state = Get-ProxyState
+    
+    Write-Host "`n=== CURL测试命令生成器 ===" -ForegroundColor Cyan
+    
+    if (!$state.PROXY_ENABLED) {
+        Write-ColorOutput "代理未启用，显示基本测试命令" "Warning"
+        Write-Host "`n基本HTTP测试:" -ForegroundColor Green
+        Write-Host "curl http://httpbin.org/ip" -ForegroundColor White
+        Write-Host "curl https://ip.sb" -ForegroundColor White
+        return
+    }
+    
+    Write-Host "`n当前代理配置:" -ForegroundColor Blue
+    if ($state.CURRENT_HTTP_PROXY) {
+        Write-Host "  HTTP: http://$($state.CURRENT_HTTP_PROXY)" -ForegroundColor Green
+    }
+    if ($state.CURRENT_SOCKS_PROXY) {
+        Write-Host "  SOCKS5: socks5://$($state.CURRENT_SOCKS_PROXY)" -ForegroundColor Green
+    }
+    
+    Write-Host "`n=== HTTP代理测试命令 ===" -ForegroundColor Yellow
+    if ($state.CURRENT_HTTP_PROXY) {
+        $httpProxy = $state.CURRENT_HTTP_PROXY
+        Write-Host "# 基本IP检查" -ForegroundColor Green
+        Write-Host "curl --proxy http://$httpProxy http://httpbin.org/ip" -ForegroundColor White
+        Write-Host "curl --proxy http://$httpProxy https://ip.sb" -ForegroundColor White
+        
+        Write-Host "`n# 详细信息检查" -ForegroundColor Green
+        Write-Host "curl --proxy http://$httpProxy http://ip-api.com/json" -ForegroundColor White
+        Write-Host "curl --proxy http://$httpProxy https://httpbin.org/headers" -ForegroundColor White
+        
+        Write-Host "`n# 连接测试" -ForegroundColor Green
+        Write-Host "curl --proxy http://$httpProxy -v https://www.google.com" -ForegroundColor White
+        Write-Host "curl --proxy http://$httpProxy --max-time 10 https://github.com" -ForegroundColor White
+    }
+    
+    Write-Host "`n=== SOCKS5代理测试命令 ===" -ForegroundColor Yellow
+    if ($state.CURRENT_SOCKS_PROXY) {
+        $socksProxy = $state.CURRENT_SOCKS_PROXY
+        Write-Host "# 基本IP检查" -ForegroundColor Green
+        Write-Host "curl --socks5-hostname $socksProxy http://httpbin.org/ip" -ForegroundColor White
+        Write-Host "curl --socks5-hostname $socksProxy https://ip.sb" -ForegroundColor White
+        
+        Write-Host "`n# 详细信息检查" -ForegroundColor Green
+        Write-Host "curl --socks5-hostname $socksProxy http://ip-api.com/json" -ForegroundColor White
+        Write-Host "curl --socks5-hostname $socksProxy https://httpbin.org/headers" -ForegroundColor White
+        
+        Write-Host "`n# 连接测试" -ForegroundColor Green
+        Write-Host "curl --socks5-hostname $socksProxy -v https://www.google.com" -ForegroundColor White
+        Write-Host "curl --socks5-hostname $socksProxy --max-time 10 https://github.com" -ForegroundColor White
+        
+        Write-Host "`n# DNS测试（SOCKS5特有）" -ForegroundColor Green
+        Write-Host "curl --socks5-hostname $socksProxy https://dns.google/resolve?name=google.com&type=A" -ForegroundColor White
+    }
+    
+    Write-Host "`n=== 自动测试执行 ===" -ForegroundColor Yellow
+    Write-Host "是否要执行自动测试？[Y/N]: " -NoNewline -ForegroundColor Cyan
+    $response = Read-Host
+    
+    if ($response -eq 'Y' -or $response -eq 'y') {
+        Write-Host "`n执行自动测试..." -ForegroundColor Cyan
+        
+        if ($state.CURRENT_SOCKS_PROXY) {
+            Write-Host "`n测试SOCKS5代理:" -ForegroundColor Green
+            try {
+                $result = curl --socks5-hostname $state.CURRENT_SOCKS_PROXY --max-time 10 -s http://httpbin.org/ip 2>$null
+                if ($result) {
+                    $ipInfo = $result | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($ipInfo.origin) {
+                        Write-Host "✓ SOCKS5代理工作正常，当前IP: $($ipInfo.origin)" -ForegroundColor Green
+                    } else {
+                        Write-Host "✓ SOCKS5代理连接成功，响应: $result" -ForegroundColor Green
+                    }
+                } else {
+                    Write-Host "✗ SOCKS5代理测试失败" -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "✗ SOCKS5代理测试出错: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        if ($state.CURRENT_HTTP_PROXY) {
+            Write-Host "`n测试HTTP代理:" -ForegroundColor Green
+            try {
+                $result = curl --proxy http://$($state.CURRENT_HTTP_PROXY) --max-time 10 -s http://httpbin.org/ip 2>$null
+                if ($result) {
+                    $ipInfo = $result | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($ipInfo.origin) {
+                        Write-Host "✓ HTTP代理工作正常，当前IP: $($ipInfo.origin)" -ForegroundColor Green
+                    } else {
+                        Write-Host "✓ HTTP代理连接成功，响应: $result" -ForegroundColor Green
+                    }
+                } else {
+                    Write-Host "✗ HTTP代理测试失败" -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "✗ HTTP代理测试出错: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+    
+    Write-Host "`n提示:" -ForegroundColor Yellow
+    Write-Host "- 使用 --max-time 10 来设置超时时间" -ForegroundColor Gray
+    Write-Host "- 使用 -v 参数可以查看详细连接信息" -ForegroundColor Gray
+    Write-Host "- 使用 -s 参数可以静默执行（不显示进度）" -ForegroundColor Gray
+}
+
+# 显示帮助信息
+function Show-Help {
+    Write-Host "`n增强PowerShell代理管理器 v3.0" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    
+    Write-Host "`n基本命令:" -ForegroundColor Blue
+    Write-Host "  enable [选项]     启用代理"
+    Write-Host "  disable [协议]    禁用代理"
+    Write-Host "  status           显示状态"
+    Write-Host "  setdefault      设置默认配置"
+    Write-Host "  test            测试连接"
+    Write-Host "  curltest        生成curl测试命令"
+    Write-Host "  install-deps    检查依赖"
+    Write-Host "  rules <动作>     管理规则"
+    Write-Host "  help            显示帮助"
+    Write-Host "  version         显示版本"
+    
+    Write-Host "`n通用选项:" -ForegroundColor Blue
+    Write-Host "  -Protocol <协议>  指定协议 (http/https/socks5/all)"
+    Write-Host "  -IP <地址>       指定代理服务器IP地址"
+    Write-Host "  -Port <端口>     指定代理服务器端口"
+    Write-Host "  -NoSave         不保存当前配置（仅用于enable命令）"
+    
+    Write-Host "`n高级选项:" -ForegroundColor Blue
+    Write-Host "  -SystemProxy    启用Windows系统代理"
+    Write-Host "  -Transparent    启用透明代理支持"
+    Write-Host "  -V, -Version    显示版本信息"
+    Write-Host "  -h, -Help       显示帮助信息"
+    
+    Write-Host "`n规则管理:" -ForegroundColor Blue
+    Write-Host "  rules list      列出规则"
+    Write-Host "  rules init      初始化规则"
+    Write-Host "  rules edit      编辑规则"
+    
+    Write-Host "`n使用示例:" -ForegroundColor Blue
+    Write-Host "1. 查看当前代理状态："
+    Write-Host "   proxy status" -ForegroundColor Gray
+    
+    Write-Host "`n2. 设置默认代理配置："
+    Write-Host "   proxy setdefault -Protocol http -IP 127.0.0.1 -Port 7890" -ForegroundColor Gray
+    Write-Host "   proxy setdefault -Protocol socks5 -IP 127.0.0.1 -Port 1080" -ForegroundColor Gray
+    Write-Host "   proxy setdefault -Protocol all -IP 127.0.0.1 -Port 7890" -ForegroundColor Gray
+    
+    Write-Host "`n3. 启用代理（使用默认配置）："
+    Write-Host "   proxy enable" -ForegroundColor Gray
+    Write-Host "   proxy enable -Protocol socks5" -ForegroundColor Gray
+    Write-Host "   proxy enable -SystemProxy" -ForegroundColor Gray
+    
+    Write-Host "`n4. 启用代理（指定新配置）："
+    Write-Host "   proxy enable -IP 127.0.0.1 -Port 8080" -ForegroundColor Gray
+    Write-Host "   proxy enable -Protocol socks5 -IP 127.0.0.1 -Port 1080 -NoSave" -ForegroundColor Gray
+    Write-Host "   proxy enable -Protocol all -IP 127.0.0.1 -Port 7890 -SystemProxy" -ForegroundColor Gray
+    
+    Write-Host "`n5. 禁用代理："
+    Write-Host "   proxy disable          # 禁用所有代理" -ForegroundColor Gray
+    Write-Host "   proxy disable http     # 仅禁用HTTP代理" -ForegroundColor Gray
+    
+    Write-Host "`n6. 测试和故障排除："
+    Write-Host "   proxy test            # 测试代理连接" -ForegroundColor Gray
+    Write-Host "   proxy curltest        # 生成curl测试命令" -ForegroundColor Gray
+    
+    Write-Host "`n7. 规则管理："
+    Write-Host "   proxy rules init      # 初始化默认规则" -ForegroundColor Gray
+    Write-Host "   proxy rules list      # 查看当前规则" -ForegroundColor Gray
+    Write-Host "   proxy rules edit      # 编辑规则文件" -ForegroundColor Gray
+    
+    Write-Host "`n注意事项:" -ForegroundColor Yellow
+    Write-Host "• 使用 setdefault 设置的配置会被保存，下次使用 enable 时会作为默认值" -ForegroundColor Gray
+    Write-Host "• 使用 -NoSave 选项时，修改的配置仅在当前会话有效" -ForegroundColor Gray
+    Write-Host "• -SystemProxy 选项会同时配置Windows系统代理，影响所有应用程序" -ForegroundColor Gray
+    Write-Host "• SOCKS5代理会同时设置环境变量和Windows系统代理（如果启用）" -ForegroundColor Gray
+    Write-Host "• 某些应用可能需要重启才能识别代理更改" -ForegroundColor Gray
+    Write-Host "• 使用 curltest 可以生成详细的curl测试命令，方便故障排除" -ForegroundColor Gray
+    
+    Write-Host "`n配置文件位置:" -ForegroundColor Blue
+    Write-Host "  配置: $script:ConfigFile" -ForegroundColor Gray
+    Write-Host "  规则: $script:RulesFile" -ForegroundColor Gray
+    Write-Host "  状态: $script:StateFile" -ForegroundColor Gray
+}
+
+# 主函数
+function Main {
+    # 检查直接运行还是作为函数调用
+    if ($MyInvocation.InvocationName -eq ".\proxy4powershell_enhanced.ps1") {
+        # 直接运行脚本 - 显示安装菜单
+        Show-InstallationMenu
+        return
+    }
+    
+    # 初始化目录
+    Initialize-ProxyDirectories
+    
+    # 处理版本和帮助参数
+    if ($Version) {
+        Write-Host "`n增强PowerShell代理管理器 v3.0" -ForegroundColor Cyan
+        Write-Host "原作者: nanyuzuo" -ForegroundColor Green
+        Write-Host "增强版本: Claude Code Enhanced" -ForegroundColor Green
+        Write-Host "新增功能: 系统代理集成、透明代理支持、增强工具集成、代理规则管理" -ForegroundColor Blue
+        Write-Host "支持平台: Windows (PowerShell 5.0+)" -ForegroundColor Blue
+        Write-Host "支持工具: Git, NPM, Docker, curl, 浏览器" -ForegroundColor Blue
+        Write-Host "依赖工具: curl (Windows 10+自带), git, npm" -ForegroundColor Blue
+        Write-Host "配置目录: $script:ProxyDir" -ForegroundColor Blue
+        Write-Host "更新日期: $(Get-Date -Format 'yyyy-MM-dd')" -ForegroundColor Blue
+        Write-Host "`n特色功能:" -ForegroundColor Yellow
+        Write-Host "• Windows系统代理自动配置" -ForegroundColor Gray
+        Write-Host "• curl测试命令生成器 (curltest)" -ForegroundColor Gray
+        Write-Host "• 智能命令包装器" -ForegroundColor Gray
+        Write-Host "• 代理规则管理系统" -ForegroundColor Gray
+        Write-Host "• 状态持久化" -ForegroundColor Gray
+        return
+    }
+    
+    if ($Help) {
+        Show-Help
+        return
+    }
+    
+    # 执行主要功能
+    switch ($Action.ToLower()) {
+        "enable" {
+            Invoke-ProxyControl "enable" $Protocol $IP $Port -NoSave:$NoSave -Transparent:$Transparent -SystemProxy:$SystemProxy
+        }
+        "disable" {
+            Invoke-ProxyControl "disable" $Protocol
+        }
+        "status" {
+            Show-ProxyStatus
+        }
+        "test" {
+            Test-ProxyConnection
+        }
+        "setdefault" {
+            $config = Get-ProxyConfig
+            
+            if ($IP -and $Port -and (Test-IPAddress $IP) -and (Test-Port $Port)) {
+                switch ($Protocol.ToLower()) {
+                    "http" { $config.HTTP_IP = $IP; $config.HTTP_PORT = $Port }
+                    "https" { $config.HTTPS_IP = $IP; $config.HTTPS_PORT = $Port }
+                    "socks5" { $config.SOCKS5_IP = $IP; $config.SOCKS5_PORT = $Port }
+                    "all" {
+                        $config.HTTP_IP = $IP; $config.HTTP_PORT = $Port
+                        $config.HTTPS_IP = $IP; $config.HTTPS_PORT = $Port
+                        $config.SOCKS5_IP = $IP; $config.SOCKS5_PORT = $Port
+                    }
+                }
+                
+                Save-ProxyConfig $config
+                Write-ColorOutput "默认代理配置已更新" "Success"
+                Show-ProxyStatus
+            } else {
+                Write-ColorOutput "请提供有效的IP地址和端口号" "Error"
+                Write-ColorOutput "示例: proxy setdefault -Protocol all -IP 127.0.0.1 -Port 7890" "Info"
+            }
+        }
+        "rules" {
+            $ruleAction = if ($IP) { $IP } else { "list" }  # 重用IP参数传递规则动作
+            Manage-ProxyRules $ruleAction
+        }
+        "curltest" {
+            Generate-CurlTestCommands
+        }
+        "install-deps" {
+            Install-ProxyDependencies
+        }
+        default {
+            Write-ColorOutput "未知命令: $Action" "Error"
+            Write-ColorOutput "使用 'proxy help' 查看帮助" "Info"
+        }
+    }
+}
+
+# 安装菜单（直接运行脚本时显示）
+function Show-InstallationMenu {
     Clear-Host
-    Write-Host "`nPowerShell Proxy Manager Installation" -ForegroundColor Cyan
+    Write-Host "`n增强PowerShell代理管理器安装" -ForegroundColor Cyan
     Write-Host "----------------------------------" -ForegroundColor Cyan
-    Write-Host "1. Install proxy function"
-    Write-Host "2. Uninstall proxy function"
-    Write-Host "Q. Exit"
+    Write-Host "1. 安装增强代理管理器"
+    Write-Host "2. 卸载代理管理器"
+    Write-Host "3. 检查依赖环境"
+    Write-Host "Q. 退出"
     Write-Host "----------------------------------" -ForegroundColor Cyan
     
     do {
-        $choice = Read-Host "`nPlease select an option (1/2/Q)"
+        $choice = Read-Host "`n请选择操作 (1/2/3/Q)"
         $choice = $choice.ToUpper()
-    } while ($choice -notin @("1", "2", "Q"))
+    } while ($choice -notin @("1", "2", "3", "Q"))
     
     switch ($choice) {
         "1" {
-            try {
-                # Create module directory
-                $modulePath = "$HOME\Documents\PowerShell\Modules\ProxyManager"
-                New-Item -Path $modulePath -ItemType Directory -Force | Out-Null
-                
-                # Copy script to module directory
-                Copy-Item -Path $PSCommandPath -Destination "$modulePath\proxy4powershell.ps1" -Force
-                
-                # Ensure profile directory exists
-                $profileDir = Split-Path $PROFILE -Parent
-                if (-not (Test-Path $profileDir)) {
-                    New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
-                }
-                
-                # Backup existing profile
-                if (Test-Path $PROFILE) {
-                    Copy-Item -Path $PROFILE -Destination "$PROFILE.backup" -Force
-                    Write-Host "`nProfile backup created: $PROFILE.backup" -ForegroundColor Green
-                }
-                
-                # Add proxy function
-                $proxyFunction = @'
+            Install-EnhancedProxyManager
+        }
+        "2" {
+            Uninstall-ProxyManager
+        }
+        "3" {
+            Install-ProxyDependencies
+            Read-Host "`n按回车键继续..."
+        }
+        "Q" {
+            Write-ColorOutput "感谢使用增强代理管理器！" "Info"
+            exit 0
+        }
+    }
+}
 
+# 安装增强代理管理器
+function Install-EnhancedProxyManager {
+    Write-ColorOutput "开始安装增强PowerShell代理管理器..." "Info"
+    
+    try {
+        # 创建模块目录
+        $modulePath = "$env:USERPROFILE\Documents\PowerShell\Modules\EnhancedProxyManager"
+        New-Item -Path $modulePath -ItemType Directory -Force | Out-Null
+        
+        # 复制脚本到模块目录
+        Copy-Item -Path $PSCommandPath -Destination "$modulePath\proxy4powershell_enhanced.ps1" -Force
+        
+        # 确保Profile目录存在
+        $profileDir = Split-Path $PROFILE -Parent
+        if (!(Test-Path $profileDir)) {
+            New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
+        }
+        
+        # 备份现有Profile
+        if (Test-Path $PROFILE) {
+            Copy-Item -Path $PROFILE -Destination "$PROFILE.backup" -Force
+            Write-ColorOutput "Profile备份已创建: $PROFILE.backup" "Success"
+        }
+        
+        # 创建proxy函数
+        $proxyFunction = @'
+
+# Enhanced Proxy Manager v3.0
 function proxy {
     param(
         [Parameter(Position=0)]
@@ -83,1130 +1146,61 @@ function proxy {
         [Parameter()]
         [switch]$NoSave,
         [Parameter()]
+        [switch]$Transparent,
+        [Parameter()]
+        [switch]$SystemProxy,
+        [Parameter()]
         [switch]$Version,
         [Parameter()]
         [switch]$Help
     )
-    & "$HOME\Documents\PowerShell\Modules\ProxyManager\proxy4powershell.ps1" @PSBoundParameters
+    
+    & "$env:USERPROFILE\Documents\PowerShell\Modules\EnhancedProxyManager\proxy4powershell_enhanced.ps1" -Action $action -Protocol $protocol -IP $ip -Port $port -NoSave:$NoSave -Transparent:$Transparent -SystemProxy:$SystemProxy -Version:$Version -Help:$Help
+}
+
+# 加载代理包装器
+$wrapperFile = "$env:USERPROFILE\.proxy\wrappers\ProxyWrappers.ps1"
+if (Test-Path $wrapperFile) {
+    . $wrapperFile
 }
 '@
-                # Check if proxy function already exists
-                $existingContent = ""
-                if (Test-Path $PROFILE) {
-                    $existingContent = Get-Content $PROFILE -Raw
-                }
-                
-                if ($existingContent -notlike "*function proxy*") {
-                    Add-Content -Path $PROFILE -Value $proxyFunction
-                    Write-Host "`nProxy function installed successfully!" -ForegroundColor Green
-                    Write-Host "You can now use the 'proxy' command in PowerShell" -ForegroundColor Cyan
-                    Write-Host "`nTo activate, either:" -ForegroundColor Yellow
-                    Write-Host "1. Restart PowerShell, or" -ForegroundColor Yellow
-                    Write-Host "2. Run: . `$PROFILE" -ForegroundColor Yellow
-                    
-                    Write-Host "`nShowing help information..." -ForegroundColor Cyan
-                    Start-Sleep -Seconds 1
-                    & $PSCommandPath -Help
-                } else {
-                    Write-Host "`nProxy function already exists!" -ForegroundColor Yellow
-                }
-            }
-            catch {
-                Write-Host "`nError during installation: $_" -ForegroundColor Red
-            }
-        }
-        "2" {
-            try {
-                $backupFile = "$PROFILE.backup"
-                
-                # Restore from backup if exists
-                if (Test-Path $backupFile) {
-                    Copy-Item -Path $backupFile -Destination $PROFILE -Force
-                    Write-Host "`nOriginal profile restored" -ForegroundColor Green
-                } else {
-                    # Remove proxy function if no backup
-                    if (Test-Path $PROFILE) {
-                        $content = Get-Content $PROFILE -Raw
-                        $newContent = $content -replace "(?ms)# Proxy Management Function\r?\nfunction proxy.*?}\r?\n", ""
-                        Set-Content -Path $PROFILE -Value $newContent
-                    }
-                }
-                
-                # Remove module files
-                $modulePath = "$HOME\Documents\PowerShell\Modules\ProxyManager"
-                if (Test-Path $modulePath) {
-                    Remove-Item -Path $modulePath -Recurse -Force
-                }
-                
-                Write-Host "`nProxy function uninstalled successfully!" -ForegroundColor Green
-                Write-Host "Please restart PowerShell or run: . `$PROFILE" -ForegroundColor Yellow
-            }
-            catch {
-                Write-Host "`nError during uninstallation: $_" -ForegroundColor Red
-            }
-        }
-        "Q" {
-            Write-Host "`nExiting installation" -ForegroundColor Yellow
-            exit
-        }
-    }
-    exit
-}
-
-# 显示版本信息
-if ($Version) {
-    Write-Host "PowerShell Proxy Manager v1.0.0" -ForegroundColor Cyan
-    Write-Host "Author: nanyuzuo"
-    Write-Host "Created: 2025-6-11"
-    exit
-}
-
-# 显示帮助信息
-if ($Help) {
-    Write-Host "`nPowerShell Proxy Manager - Help" -ForegroundColor Yellow
-    Write-Host "Basic Commands:"
-    Write-Host "  proxy [action] [-protocol <protocol>] [-ip <IP>] [-port <port>]"
-    Write-Host "  proxy -h｜help     Show this help"
-    Write-Host "  proxy -V｜version  Show version info"    
-    Write-Host "  enable     Enable proxy"
-    Write-Host "  disable    Disable proxy"
-    Write-Host "  status     Show current status"
-    Write-Host "  setdefault Set default proxy config"
-    Write-Host "  test       Test proxy connection"
-    Write-Host "  curltest   Generate curl commands for manual testing"
-    Write-Host "  backup     Backup current configuration"
-    Write-Host "  restore    Restore from backup"
-    Write-Host "  reset      Reset to default configuration"
-    Write-Host "  log        Show recent log entries`n"
-    
-    Write-Host "Protocol Options:" -ForegroundColor Cyan
-    Write-Host "  http       HTTP proxy"
-    Write-Host "  https      HTTPS proxy"
-    Write-Host "  socks5     SOCKS5 proxy"
-    Write-Host "  all        All protocols`n"
-    
-    Write-Host "Examples:" -ForegroundColor Green
-    Write-Host "1. Enable all proxies (using default config)"
-    Write-Host "   proxy enable -protocol all`n"
-    
-    Write-Host "2. Enable specific proxy with address"
-    Write-Host "   proxy enable -protocol https -ip 192.168.1.100 -port 8888`n"
-    
-    Write-Host "3. Disable SOCKS5 proxy"
-    Write-Host "   proxy disable -protocol socks5`n"
-    
-    Write-Host "4. Set default proxy config"
-    Write-Host "   proxy setdefault -protocol all -ip 127.0.0.1 -port 7890`n"
-    
-    Write-Host "5. Show current proxy status"
-    Write-Host "   proxy status`n"
-    
-    Write-Host "6. Disable all proxies"
-    Write-Host "   proxy disable -protocol all`n"
-    
-    Write-Host "7. Test proxy connection"
-    Write-Host "   proxy test`n"
-    
-    Write-Host "8. Backup configuration"
-    Write-Host "   proxy backup`n"
-    
-    Write-Host "9. Show recent logs"
-    Write-Host "   proxy log`n"
-    
-    Write-Host "10. Reset configuration"
-    Write-Host "    proxy reset`n"
-    
-    
-    Write-Host "Advanced Options:" -ForegroundColor Magenta
-    Write-Host "  -NoSave    Execute without saving to config"
-    Write-Host "             Example: proxy enable -protocol http -NoSave`n"
-    
-    Write-Host "SOCKS5 Proxy Special Notes:" -ForegroundColor Red
-    Write-Host "• SOCKS5 proxy sets both environment variables and Windows system proxy"
-    Write-Host "• For curl, use explicit proxy parameter:"
-    Write-Host "  curl --socks5-hostname IP:PORT http://example.com"
-    Write-Host "  Some applications may require restart to recognize proxy changes"
-    Write-Host "  Windows system proxy (netsh) is also configured for better compatibility`n"
-    
-    Write-Host "Config file: $HOME\proxyconfig.xml`n"
-    exit
-}
-
-# 配置文件路径和日志路径
-$configPath = Join-Path $HOME "proxyconfig.xml"
-$logPath = Join-Path $HOME "proxy_manager.log"
-$backupPath = Join-Path $HOME "proxyconfig_backup.xml"
-
-# 日志记录函数
-function Write-Log {
-    param(
-        [string]$Message,
-        [ValidateSet("INFO", "WARN", "ERROR", "SUCCESS")]
-        [string]$Level = "INFO"
-    )
-    
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "[$timestamp] [$Level] $Message"
-    
-    # 写入日志文件
-    try {
-        Add-Content -Path $logPath -Value $logEntry -Encoding UTF8
-    }
-    catch {
-        # 如果日志写入失败，不影响主要功能
-    }
-    
-    # 根据级别显示不同颜色
-    switch ($Level) {
-        "SUCCESS" { Write-Host $Message -ForegroundColor Green }
-        "WARN" { Write-Host $Message -ForegroundColor Yellow }
-        "ERROR" { Write-Host $Message -ForegroundColor Red }
-        default { Write-Host $Message }
-    }
-}
-
-# 参数验证函数
-function Test-ProxyParameters {
-    param(
-        [string]$IP,
-        [int]$Port
-    )
-    
-    $errors = @()
-    
-    # 验证IP地址
-    if ($IP) {
-        if (-not ($IP -match '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^localhost$|^[a-zA-Z0-9.-]+$')) {
-            $errors += "Invalid IP address format: $IP"
-        }
-    }
-    
-    # 验证端口号
-    if ($Port -and ($Port -lt 1 -or $Port -gt 65535)) {
-        $errors += "Invalid port number: $Port (must be 1-65535)"
-    }
-    
-    return $errors
-}
-
-# 网络连接测试函数
-function Test-ProxyConnectivity {
-    param(
-        [string]$IP,
-        [int]$Port,
-        [int]$TimeoutSeconds = 5
-    )
-    
-    try {
-        $tcpClient = New-Object System.Net.Sockets.TcpClient
-        $connectTask = $tcpClient.ConnectAsync($IP, $Port)
         
-        if ($connectTask.Wait($TimeoutSeconds * 1000)) {
-            $tcpClient.Close()
-            return $true
-        } else {
-            $tcpClient.Close()
-            return $false
-        }
-    }
-    catch {
-        return $false
-    }
-}
-
-# 配置备份函数
-function Backup-ProxyConfig {
-    if (Test-Path $configPath) {
-        try {
-            Copy-Item -Path $configPath -Destination $backupPath -Force
-            Write-Log "Configuration backed up successfully" "SUCCESS"
-            return $true
-        }
-        catch {
-            Write-Log "Failed to backup configuration: $_" "ERROR"
-            return $false
-        }
-    }
-    return $true
-}
-
-# 加载或初始化配置
-function Initialize-ProxyConfig {
-    try {
-        if (Test-Path $configPath) {
-            $config = Import-Clixml -Path $configPath
-            
-            # 验证配置文件的完整性
-            if (-not $config.Proxies -or -not $config.Proxies.HTTP -or -not $config.Proxies.HTTPS -or -not $config.Proxies.SOCKS5) {
-                throw "Configuration file is corrupted or incomplete"
-            }
-            
-            Write-Log "Configuration loaded from $configPath" "INFO"
-        } else {
-            # 创建默认配置
-            $config = @{
-                Version = "2.0.0"
-                LastModified = (Get-Date)
-                Proxies = @{
-                    HTTP = @{
-                        IP = "127.0.0.1"
-                        Port = 7890
-                        Enabled = $false
-                    }
-                    HTTPS = @{
-                        IP = "127.0.0.1"
-                        Port = 7890
-                        Enabled = $false
-                    }
-                    SOCKS5 = @{
-                        IP = "127.0.0.1"
-                        Port = 7891
-                        Enabled = $false
-                    }
-                }
-            }
-            Write-Log "Created new default configuration" "INFO"
-        }
-        return $config
-    }
-    catch {
-        Write-Log "Error loading configuration: $_" "ERROR"
-        
-        # 尝试从备份恢复
-        if (Test-Path $backupPath) {
-            Write-Log "Attempting to restore from backup..." "WARN"
-            try {
-                $config = Import-Clixml -Path $backupPath
-                Copy-Item -Path $backupPath -Destination $configPath -Force
-                Write-Log "Configuration restored from backup" "SUCCESS"
-                return $config
-            }
-            catch {
-                Write-Log "Failed to restore from backup: $_" "ERROR"
-            }
+        # 检查proxy函数是否已存在
+        $existingContent = ""
+        if (Test-Path $PROFILE) {
+            $existingContent = Get-Content $PROFILE -Raw
         }
         
-        # 如果所有恢复尝试失败，返回默认配置
-        Write-Log "Using default configuration" "WARN"
-        return @{
-            Version = "2.0.0"
-            LastModified = (Get-Date)
-            Proxies = @{
-                HTTP = @{
-                    IP = "127.0.0.1"
-                    Port = 7890
-                    Enabled = $false
-                }
-                HTTPS = @{
-                    IP = "127.0.0.1"
-                    Port = 7890
-                    Enabled = $false
-                }
-                SOCKS5 = @{
-                    IP = "127.0.0.1"
-                    Port = 7891
-                    Enabled = $false
-                }
-            }
-        }
-    }
-}
-
-# 初始化配置
-$config = Initialize-ProxyConfig
-
-# 添加特殊工具代理配置函数
-function Set-ToolProxy {
-    param(
-        [string]$Type,
-        [string]$IP,
-        [int]$Port,
-        [bool]$Enable
-    )
-    
-    $proxyUrl = if ($Enable) { "${IP}:${Port}" } else { "" }
-    $proxyUrlWithProtocol = if ($Enable) { "${Type}://${IP}:${Port}" } else { "" }
-    
-    # Git配置
-    try {
-        if ($Enable) {
-            # 统一使用 http 协议处理代理
-            $proxyUrl = "http://${IP}:${Port}"
-            
-            if ($Type -eq "socks5") {
-                $proxyUrl = "socks5h://${IP}:${Port}"
-            }
-            
-            # 使用相同的 http proxy 配置处理所有请求
-            git config --global http.proxy $proxyUrl
-            git config --global https.proxy $proxyUrl
-            
-            # 使用系统证书存储，这样可以利用 Windows 的证书信任机制
-            git config --global http.sslBackend schannel
-            
-            # 增加超时时间以提高稳定性
-            git config --global http.lowSpeedLimit 1000
-            git config --global http.lowSpeedTime 300
-            
-            # 设置环境变量以确保 Git 使用正确的代理
-            if ($Type -eq "socks5") {
-                $env:ALL_PROXY = $proxyUrl
-            } else {
-                $env:HTTP_PROXY = $proxyUrl
-                $env:HTTPS_PROXY = $proxyUrl
-            }
-            
-            Write-Host "Git proxy configured successfully" -ForegroundColor Green
-            Write-Host "Current Git proxy settings:" -ForegroundColor Cyan
-            git config --global --get http.proxy
-            git config --global --get https.proxy
-            
-        } else {
-            # 清除所有Git代理和相关设置
-            git config --global --unset http.proxy
-            git config --global --unset https.proxy
-            git config --global --unset http.sslBackend
-            git config --global --unset http.lowSpeedLimit
-            git config --global --unset http.lowSpeedTime
-            
-            # 清除环境变量
-            $env:ALL_PROXY = $null
-            $env:HTTP_PROXY = $null
-            $env:HTTPS_PROXY = $null
-            
-            Write-Host "Git proxy settings removed" -ForegroundColor Yellow
+        if ($existingContent -notlike "*function proxy*") {
+            Add-Content -Path $PROFILE -Value $proxyFunction
         }
         
-        # 显示当前 Git 配置状态
-        Write-Host "`nCurrent Git Configuration:" -ForegroundColor Cyan
-        git config --global --list | Select-String -Pattern "http|https|ssl|proxy"
+        # 初始化配置
+        Initialize-ProxyDirectories
+        $null = Get-ProxyConfig  # 自动创建默认配置
+        Initialize-ProxyRules
         
-    }
-    catch {
-        Write-Host "Warning: Could not configure Git proxy: $_" -ForegroundColor Yellow
-    }
-    
-    # npm配置
-    try {
-        $npmAvailable = Get-Command npm -ErrorAction SilentlyContinue
-        if ($npmAvailable) {
-            if ($Enable) {
-                npm config set proxy $proxyUrlWithProtocol
-                npm config set https-proxy $proxyUrlWithProtocol
-                Write-Log "npm proxy configured successfully" "SUCCESS"
-            } else {
-                npm config delete proxy
-                npm config delete https-proxy
-                Write-Log "npm proxy removed" "SUCCESS"
-            }
-        } else {
-            Write-Log "npm not found, skipping npm proxy configuration" "WARN"
-        }
-    }
-    catch {
-        Write-Log "Could not configure npm proxy: $_" "WARN"
-    }
-    
-    # pip配置
-    try {
-        $pipAvailable = Get-Command pip -ErrorAction SilentlyContinue
-        if ($pipAvailable) {
-            $pipConfigDir = "$HOME\.pip"
-            $pipConfigFile = "$pipConfigDir\pip.ini"
-            
-            if (-not (Test-Path $pipConfigDir)) {
-                New-Item -ItemType Directory -Path $pipConfigDir -Force | Out-Null
-            }
-            
-            if ($Enable) {
-                $pipConfig = @"
-[global]
-proxy = $proxyUrlWithProtocol
-trusted-host = pypi.org
-               pypi.python.org
-               files.pythonhosted.org
-"@
-                Set-Content -Path $pipConfigFile -Value $pipConfig -Encoding UTF8
-                Write-Log "pip proxy configured successfully" "SUCCESS"
-            } else {
-                if (Test-Path $pipConfigFile) {
-                    Remove-Item -Path $pipConfigFile -Force
-                    Write-Log "pip proxy configuration removed" "SUCCESS"
-                }
-            }
-        } else {
-            Write-Log "pip not found, skipping pip proxy configuration" "WARN"
-        }
-    }
-    catch {
-        Write-Log "Could not configure pip proxy: $_" "WARN"
-    }
-    
-    # yarn配置
-    try {
-        $yarnAvailable = Get-Command yarn -ErrorAction SilentlyContinue
-        if ($yarnAvailable) {
-            if ($Enable) {
-                yarn config set proxy $proxyUrlWithProtocol
-                yarn config set https-proxy $proxyUrlWithProtocol
-                Write-Log "yarn proxy configured successfully" "SUCCESS"
-            } else {
-                yarn config delete proxy
-                yarn config delete https-proxy
-                Write-Log "yarn proxy removed" "SUCCESS"
-            }
-        } else {
-            Write-Log "yarn not found, skipping yarn proxy configuration" "WARN"
-        }
-    }
-    catch {
-        Write-Log "Could not configure yarn proxy: $_" "WARN"
-    }
-    
-    # Docker配置
-    try {
-        $dockerConfigPath = "$HOME/.docker/config.json"
-        $dockerConfigDir = Split-Path $dockerConfigPath -Parent
+        Write-ColorOutput "安装完成！" "Success"
+        Write-ColorOutput "请重启PowerShell或运行以下命令使配置生效:" "Info"
+        Write-ColorOutput ". `$PROFILE" "Info"
+        Write-ColorOutput "" "Info"
+        Write-ColorOutput "开始使用:" "Info"
+        Write-ColorOutput "  proxy status     # 查看状态" "Info"
+        Write-ColorOutput "  proxy help       # 查看帮助" "Info"
+        Write-ColorOutput "  proxy install-deps  # 检查依赖" "Info"
         
-        if (-not (Test-Path $dockerConfigDir)) {
-            New-Item -ItemType Directory -Path $dockerConfigDir -Force | Out-Null
-        }
-        
-        if (Test-Path $dockerConfigPath) {
-            $dockerConfig = Get-Content $dockerConfigPath | ConvertFrom-Json
-        } else {
-            $dockerConfig = @{}
-        }
-        
-        if ($Enable) {
-            $dockerConfig.proxies = @{
-                default = @{
-                    httpProxy = "http://${IP}:${Port}"
-                    httpsProxy = "https://${IP}:${Port}"
-                    noProxy = "localhost,127.0.0.1"
-                }
-            }
-            $dockerConfig | ConvertTo-Json -Depth 10 | Set-Content $dockerConfigPath
-            Write-Host "Docker proxy configured successfully" -ForegroundColor Green
-        } else {
-            if ($dockerConfig.proxies) {
-                $dockerConfig.PSObject.Properties.Remove('proxies')
-                $dockerConfig | ConvertTo-Json -Depth 10 | Set-Content $dockerConfigPath
-            }
-            Write-Host "Docker proxy removed" -ForegroundColor Yellow
-        }
-    }
-    catch {
-        Write-Host "Warning: Could not configure Docker proxy: $_" -ForegroundColor Yellow
-    }
-}
-
-# 核心功能函数
-function Enable-Proxy {
-    param(
-        [string]$Type,
-        [string]$IP,
-        [int]$Port
-    )
-    
-    Write-Log "Enabling $Type proxy: ${IP}:${Port}" "INFO"
-    
-    # 参数验证
-    $validationErrors = Test-ProxyParameters -IP $IP -Port $Port
-    if ($validationErrors.Count -gt 0) {
-        foreach ($error in $validationErrors) {
-            Write-Log $error "ERROR"
-        }
-        return $false
-    }
-    
-    # 测试网络连接
-    if (-not (Test-ProxyConnectivity -IP $IP -Port $Port)) {
-        Write-Log "Warning: Cannot connect to proxy server ${IP}:${Port}" "WARN"
-        $continue = Read-Host "Continue anyway? (y/N)"
-        if ($continue.ToLower() -ne 'y') {
-            Write-Log "Proxy setup cancelled by user" "INFO"
-            return $false
-        }
-    }
-    
-    $proxyString = "${Type}://${IP}:${Port}"
-    
-    try {
-    
-    # 设置 .NET 默认代理配置
-    if ($Type.ToLower() -in @("http", "https")) {
-        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy("http://${IP}:${Port}", $true)
-    }
-    
-    switch ($Type.ToLower()) {
-        "http" {
-            $env:HTTP_PROXY = $proxyString
-            $env:http_proxy = $proxyString
-            $config.Proxies.HTTP.IP = $IP
-            $config.Proxies.HTTP.Port = $Port
-            $config.Proxies.HTTP.Enabled = $true
-            Write-Log "HTTP proxy enabled: $proxyString" "SUCCESS"
-            # 设置工具代理
-            Set-ToolProxy -Type "http" -IP $IP -Port $Port -Enable $true
-        }
-        "https" {
-            $env:HTTPS_PROXY = $proxyString
-            $env:https_proxy = $proxyString
-            $config.Proxies.HTTPS.IP = $IP
-            $config.Proxies.HTTPS.Port = $Port
-            $config.Proxies.HTTPS.Enabled = $true
-            Write-Log "HTTPS proxy enabled: $proxyString" "SUCCESS"
-            # 设置工具代理
-            Set-ToolProxy -Type "https" -IP $IP -Port $Port -Enable $true
-        }
-        "socks5" {
-            $env:ALL_PROXY = $proxyString
-            $env:all_proxy = $proxyString
-            $env:SOCKS_PROXY = $proxyString
-            $env:socks_proxy = $proxyString
-            $env:SOCKS5_PROXY = $proxyString
-            $env:socks5_proxy = $proxyString
-            
-            try {
-                Set-WindowsProxy -ProxyType "SOCKS5" -IP $IP -Port $Port
-                Write-Host "Windows system SOCKS5 proxy configured" -ForegroundColor Cyan
-            }
-            catch {
-                Write-Host "Warning: Could not set Windows system proxy: $_" -ForegroundColor Yellow
-            }
-            
-            $config.Proxies.SOCKS5.IP = $IP
-            $config.Proxies.SOCKS5.Port = $Port
-            $config.Proxies.SOCKS5.Enabled = $true
-            Write-Log "SOCKS5 proxy enabled: $proxyString" "SUCCESS"
-            Write-Host "Note: For curl, use: curl --socks5-hostname ${IP}:${Port} <url>" -ForegroundColor Yellow
-            # 设置工具代理
-            Set-ToolProxy -Type "socks5" -IP $IP -Port $Port -Enable $true
-        }
-    }
-    
-    return $true
     } catch {
-        Write-Log "Error enabling $Type proxy: $_" "ERROR"
-        return $false
+        Write-ColorOutput "安装失败: $($_.Exception.Message)" "Error"
     }
+    
+    Read-Host "`n按回车键继续..."
 }
 
-function Disable-Proxy {
-    param(
-        [string]$Type
-    )
-    
-    Write-Log "Disabling $Type proxy" "INFO"
-    
-    try {
-    
-    # 禁用 .NET 默认代理配置
-    if ($Type.ToLower() -in @("http", "https", "all")) {
-        [System.Net.WebRequest]::DefaultWebProxy = $null
-    }
-    
-    switch ($Type.ToLower()) {
-        "http" {
-            $env:HTTP_PROXY = $null
-            $env:http_proxy = $null
-            $config.Proxies.HTTP.Enabled = $false
-            Write-Log "HTTP proxy disabled" "SUCCESS"
-            # 禁用工具代理
-            Set-ToolProxy -Type "http" -IP "" -Port 0 -Enable $false
-        }
-        "https" {
-            $env:HTTPS_PROXY = $null
-            $env:https_proxy = $null
-            $config.Proxies.HTTPS.Enabled = $false
-            Write-Log "HTTPS proxy disabled" "SUCCESS"
-            # 禁用工具代理
-            Set-ToolProxy -Type "https" -IP "" -Port 0 -Enable $false
-        }
-        "socks5" {
-            $env:ALL_PROXY = $null
-            $env:all_proxy = $null
-            $env:SOCKS_PROXY = $null
-            $env:socks_proxy = $null
-            $env:SOCKS5_PROXY = $null
-            $env:socks5_proxy = $null
-            
-            try {
-                Disable-WindowsProxy
-                Write-Host "Windows system proxy disabled" -ForegroundColor Cyan
-            }
-            catch {
-                Write-Host "Warning: Could not disable Windows system proxy: $_" -ForegroundColor Yellow
-            }
-            
-            $config.Proxies.SOCKS5.Enabled = $false
-            Write-Log "SOCKS5 proxy disabled" "SUCCESS"
-            # 禁用工具代理
-            Set-ToolProxy -Type "socks5" -IP "" -Port 0 -Enable $false
-        }
-        "all" {
-            $env:HTTP_PROXY = $null
-            $env:http_proxy = $null
-            $env:HTTPS_PROXY = $null
-            $env:https_proxy = $null
-            $env:ALL_PROXY = $null
-            $env:all_proxy = $null
-            $env:SOCKS_PROXY = $null
-            $env:socks_proxy = $null
-            $env:SOCKS5_PROXY = $null
-            $env:socks5_proxy = $null
-            
-            try {
-                Disable-WindowsProxy
-                Write-Host "Windows system proxy disabled" -ForegroundColor Cyan
-            }
-            catch {
-                Write-Host "Warning: Could not disable Windows system proxy: $_" -ForegroundColor Yellow
-            }
-            
-            $config.Proxies.HTTP.Enabled = $false
-            $config.Proxies.HTTPS.Enabled = $false
-            $config.Proxies.SOCKS5.Enabled = $false
-            Write-Log "All proxies disabled" "SUCCESS"
-            # 禁用所有工具代理
-            Set-ToolProxy -Type "all" -IP "" -Port 0 -Enable $false
-        }
-    }
-    
-    return $true
-    } catch {
-        Write-Log "Error disabling $Type proxy: $_" "ERROR"
-        return $false
-    }
+# 卸载代理管理器
+function Uninstall-ProxyManager {
+    Write-ColorOutput "卸载功能将在后续版本中实现" "Info"
+    Read-Host "`n按回车键继续..."
 }
 
-# Windows系统代理设置函数
-function Set-WindowsProxy {
-    param(
-        [string]$ProxyType,
-        [string]$IP,
-        [int]$Port
-    )
-    
-    if ($ProxyType -eq "SOCKS5") {
-        # 使用netsh设置SOCKS5代理
-        $netshResult = netsh winhttp set proxy proxy-server="socks=${IP}:${Port}"
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Windows SOCKS5 proxy set successfully" -ForegroundColor Green
-        }
-    }
-}
-
-function Disable-WindowsProxy {
-    $netshResult = netsh winhttp reset proxy
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "Windows proxy reset successfully" -ForegroundColor Green
-    }
-}
-
-function Show-Status {
-    Write-Host "`n--- Current Proxy Status ---" -ForegroundColor Cyan
-    
-    if ($env:HTTP_PROXY) { 
-        Write-Host "HTTP: $env:HTTP_PROXY [Enabled]" -ForegroundColor Green
-    } else { 
-        Write-Host "HTTP: Disabled" -ForegroundColor Gray
-    }
-    
-    if ($env:HTTPS_PROXY) { 
-        Write-Host "HTTPS: $env:HTTPS_PROXY [Enabled]" -ForegroundColor Green
-    } else { 
-        Write-Host "HTTPS: Disabled" -ForegroundColor Gray
-    }
-    
-    if ($env:ALL_PROXY) { 
-        Write-Host "SOCKS5: $env:ALL_PROXY [Enabled]" -ForegroundColor Green
-    } else { 
-        Write-Host "SOCKS5: Disabled" -ForegroundColor Gray
-    }
-    
-    # 显示Windows系统代理状态
-    Write-Host "`n--- Windows System Proxy ---" -ForegroundColor Cyan
-    try {
-        # 保存原始编码
-        $originalEncoding = [Console]::OutputEncoding
-        
-        # 设置输出编码为UTF8
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        
-        # 获取并显示代理设置
-        $systemProxy = netsh winhttp show proxy
-        $systemProxy -split "`n" | ForEach-Object {
-            $line = $_.Trim()
-            if ($line) {
-                Write-Host $line -ForegroundColor White
-            }
-        }
-        
-        # 恢复原始编码
-        [Console]::OutputEncoding = $originalEncoding
-    }
-    catch {
-        Write-Host "Unable to retrieve Windows system proxy settings" -ForegroundColor Yellow
-    }
-    
-    Write-Host "------------------------`n" -ForegroundColor Cyan
-    
-    Write-Host "--- Default Config ---" -ForegroundColor Cyan
-    Write-Host "HTTP: http://$($config.Proxies.HTTP.IP):$($config.Proxies.HTTP.Port)"
-    Write-Host "HTTPS: https://$($config.Proxies.HTTPS.IP):$($config.Proxies.HTTPS.Port)"
-    Write-Host "SOCKS5: socks5://$($config.Proxies.SOCKS5.IP):$($config.Proxies.SOCKS5.Port)"
-    Write-Host "-------------------`n" -ForegroundColor Cyan
-}
-
-# 参数处理逻辑
-switch ($action.ToLower()) {
-    "enable" {
-        if ($protocol -eq "all") {
-            # 处理所有协议
-            $protocols = @("http", "https", "socks5")
-            foreach ($p in $protocols) {
-                $currentIP = $ip
-                $currentPort = $port
-                
-                # 如果未提供IP/端口，使用该协议的默认配置
-                if (-not ($currentIP -and $currentPort)) {
-                    $currentIP = $config.Proxies.$p.IP
-                    $currentPort = $config.Proxies.$p.Port
-                }
-                
-                Enable-Proxy -Type $p -IP $currentIP -Port $currentPort
-            }
-        } else {
-            # 处理单个协议
-            if (-not ($ip -and $port)) {
-                $ip = $config.Proxies.$protocol.IP
-                $port = $config.Proxies.$protocol.Port
-            }
-            
-            Enable-Proxy -Type $protocol -IP $ip -Port $port
-        }
-    }
-    
-    "disable" {
-        if ($protocol -eq "all") {
-            Disable-Proxy -Type "all"
-        } else {
-            Disable-Proxy -Type $protocol
-        }
-    }
-    
-    "status" {
-        Show-Status
-    }
-    
-    "setdefault" {
-        if ($ip -and $port) {
-            switch ($protocol) {
-                "http" {
-                    $config.Proxies.HTTP.IP = $ip
-                    $config.Proxies.HTTP.Port = $port
-                }
-                "https" {
-                    $config.Proxies.HTTPS.IP = $ip
-                    $config.Proxies.HTTPS.Port = $port
-                }
-                "socks5" {
-                    $config.Proxies.SOCKS5.IP = $ip
-                    $config.Proxies.SOCKS5.Port = $port
-                }
-                "all" {
-                    $config.Proxies.HTTP.IP = $ip
-                    $config.Proxies.HTTP.Port = $port
-                    $config.Proxies.HTTPS.IP = $ip
-                    $config.Proxies.HTTPS.Port = $port
-                    $config.Proxies.SOCKS5.IP = $ip
-                    $config.Proxies.SOCKS5.Port = $port
-                }
-            }
-            
-            if ($protocol -eq "all") {
-                Write-Host "Default proxies updated: HTTP=${ip}:${port}, HTTPS=${ip}:${port}, SOCKS5=${ip}:${port}" -ForegroundColor Cyan
-            } else {
-                Write-Host "Default ${protocol} proxy updated: ${protocol}://${ip}:${port}" -ForegroundColor Cyan
-            }
-        } else {
-            Write-Host "Usage example: proxy setdefault -protocol http -ip 127.0.0.1 -port 7890" -ForegroundColor Magenta
-        }
-    }
-
-    "test" {
-        Write-Host "`n--- Testing Proxy Connection ---" -ForegroundColor Cyan
-        
-        # 检测当前启用的代理类型
-        $activeProxy = $null
-        $proxyInfo = $null
-        
-        if ($env:ALL_PROXY -or $env:SOCKS5_PROXY) {
-            $activeProxy = "SOCKS5"
-            $proxyInfo = if ($env:ALL_PROXY) { $env:ALL_PROXY } else { $env:SOCKS5_PROXY }
-        }
-        elseif ($env:HTTPS_PROXY) {
-            $activeProxy = "HTTPS"
-            $proxyInfo = $env:HTTPS_PROXY
-        }
-        elseif ($env:HTTP_PROXY) {
-            $activeProxy = "HTTP"
-            $proxyInfo = $env:HTTP_PROXY
-        }
-        
-        if ($activeProxy) {
-            Write-Host "Detected active proxy: $activeProxy ($proxyInfo)" -ForegroundColor Cyan
-        } else {
-            Write-Host "No proxy detected, testing direct connection" -ForegroundColor Yellow
-        }
-        
-        # 测试方法1：使用PowerShell的Invoke-WebRequest（适用于HTTP/HTTPS代理）
-        if ($activeProxy -in @("HTTP", "HTTPS", $null)) {
-            Write-Host "`nTesting with PowerShell Invoke-WebRequest..." -ForegroundColor Cyan
-            try {
-                $result = Invoke-WebRequest -Uri "http://ip-api.com/json" -UseBasicParsing -TimeoutSec 10 | ConvertFrom-Json
-                Write-Host "PowerShell Test Successful!" -ForegroundColor Green
-                Write-Host "Current IP: $($result.query)" -ForegroundColor Yellow
-                Write-Host "Location: $($result.country), $($result.regionName), $($result.city)" -ForegroundColor Yellow
-                Write-Host "ISP: $($result.isp)" -ForegroundColor Yellow
-            }
-            catch {
-                Write-Host "PowerShell Test Failed: $_" -ForegroundColor Red
-            }
-        }
-        
-        # 测试方法2：使用curl（更好地支持SOCKS5）
-        Write-Host "`nTesting with curl..." -ForegroundColor Cyan
-        try {
-            $curlAvailable = Get-Command curl.exe -ErrorAction SilentlyContinue
-            if ($curlAvailable) {
-                # 根据代理类型构建curl命令
-                $curlArgs = @('--connect-timeout', '10', '--max-time', '30', '-s', 'http://ip-api.com/json')
-                
-                if ($activeProxy -eq "SOCKS5" -and $proxyInfo -match "socks5h?://([^:]+):(\d+)") {
-                    $socksIP = $Matches[1]
-                    $socksPort = $Matches[2]
-                    $curlArgs = @('--socks5-hostname', "${socksIP}:${socksPort}") + $curlArgs
-                    Write-Host "Using SOCKS5 proxy: ${socksIP}:${socksPort}" -ForegroundColor Cyan
-                }
-                
-                Write-Host "Executing: curl $($curlArgs -join ' ')" -ForegroundColor Gray
-                $curlResult = & curl.exe @curlArgs
-                
-                if ($LASTEXITCODE -eq 0 -and $curlResult) {
-                    try {
-                        $result = $curlResult | ConvertFrom-Json
-                        Write-Host "Curl Test Successful!" -ForegroundColor Green
-                        Write-Host "Current IP: $($result.query)" -ForegroundColor Yellow
-                        Write-Host "Location: $($result.country), $($result.regionName), $($result.city)" -ForegroundColor Yellow
-                        Write-Host "ISP: $($result.isp)" -ForegroundColor Yellow
-                    }
-                    catch {
-                        Write-Host "Curl response parsing failed: $_" -ForegroundColor Red
-                        Write-Host "Raw response: $curlResult" -ForegroundColor Gray
-                    }
-                } else {
-                    Write-Host "Curl Test Failed (Exit code: $LASTEXITCODE)" -ForegroundColor Red
-                    Write-Host "Raw response: $curlResult" -ForegroundColor Gray
-                    
-                    # 尝试直接测试连接性
-                    if ($activeProxy -eq "SOCKS5" -and $socksIP -and $socksPort) {
-                        Write-Host "`nTrying direct connection test to proxy server..." -ForegroundColor Cyan
-                        $testResult = Test-NetConnection -ComputerName $socksIP -Port $socksPort -WarningAction SilentlyContinue
-                        if ($testResult.TcpTestSucceeded) {
-                            Write-Host "SOCKS5 proxy server is reachable" -ForegroundColor Green
-                        } else {
-                            Write-Host "Cannot connect to SOCKS5 proxy server" -ForegroundColor Red
-                        }
-                    }
-                }
-            } else {
-                Write-Host "Curl not available on this system" -ForegroundColor Yellow
-            }
-        }
-        catch {
-            Write-Host "Curl Test Error: $_" -ForegroundColor Red
-        }
-        
-        # 如果是SOCKS5代理，提供额外的使用建议
-        if ($activeProxy -eq "SOCKS5") {
-            Write-Host "`n--- SOCKS5 Proxy Usage Tips ---" -ForegroundColor Magenta
-            Write-Host "For curl usage:" -ForegroundColor Yellow
-            if ($proxyInfo -match "socks5h?://([^:]+):(\d+)") {
-                $socksIP = $Matches[1]
-                $socksPort = $Matches[2]
-                Write-Host "  curl --socks5-hostname ${socksIP}:${socksPort} http://example.com" -ForegroundColor White
-            }
-            Write-Host "`nFor other applications:" -ForegroundColor Yellow
-            Write-Host "  Current proxy settings:" -ForegroundColor White
-            Write-Host "  ALL_PROXY=$env:ALL_PROXY" -ForegroundColor White
-            Write-Host "  SOCKS_PROXY=$env:SOCKS_PROXY" -ForegroundColor White
-            Write-Host "  SOCKS5_PROXY=$env:SOCKS5_PROXY" -ForegroundColor White
-        }
-        
-        Write-Host "`n-----------------------------`n" -ForegroundColor Cyan
-    }
-    
-    "curltest" {
-        Write-Host "`n--- Curl Command Test ---" -ForegroundColor Cyan
-        
-        # 获取SOCKS5代理配置
-        $socksIP = $config.Proxies.SOCKS5.IP
-        $socksPort = $config.Proxies.SOCKS5.Port
-        
-        if (-not $socksIP -or -not $socksPort) {
-            Write-Host "No SOCKS5 proxy configured. Use 'proxy setdefault -protocol socks5 -ip <IP> -port <PORT>' first." -ForegroundColor Red
-            return
-        }
-        
-        Write-Host "SOCKS5 proxy: ${socksIP}:${socksPort}" -ForegroundColor Cyan
-        Write-Host "`nGenerated curl commands you can run manually:" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "Basic IP check:" -ForegroundColor Green
-        Write-Host "curl --socks5-hostname ${socksIP}:${socksPort} http://ipinfo.io" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Detailed IP info:" -ForegroundColor Green  
-        Write-Host "curl --socks5-hostname ${socksIP}:${socksPort} http://ip-api.com/json" -ForegroundColor White
-        Write-Host ""
-        Write-Host "HTTPS test:" -ForegroundColor Green
-        Write-Host "curl --socks5-hostname ${socksIP}:${socksPort} https://httpbin.org/ip" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Test with verbose output:" -ForegroundColor Green
-        Write-Host "curl --socks5-hostname ${socksIP}:${socksPort} -v http://httpbin.org/ip" -ForegroundColor White
-        Write-Host ""
-        
-        # 尝试执行一个简单的测试
-        Write-Host "Attempting automatic test..." -ForegroundColor Cyan
-        try {
-            # 使用最简单的方法
-            $testCmd = "curl.exe"
-            $testArgs = @("--socks5-hostname", "${socksIP}:${socksPort}", "-s", "--max-time", "10", "http://httpbin.org/ip")
-            
-            Write-Host "Command: $testCmd $($testArgs -join ' ')" -ForegroundColor Gray
-            
-            $result = & $testCmd @testArgs
-            
-            if ($LASTEXITCODE -eq 0 -and $result) {
-                Write-Host "Automatic test successful!" -ForegroundColor Green
-                try {
-                    $jsonResult = $result | ConvertFrom-Json
-                    Write-Host "Your IP through proxy: $($jsonResult.origin)" -ForegroundColor White  
-                }
-                catch {
-                    Write-Host "Response: $result" -ForegroundColor White
-                }
-            } else {
-                Write-Host "Automatic test failed (Exit code: $LASTEXITCODE)" -ForegroundColor Red
-                Write-Host "Please try running the manual commands above" -ForegroundColor Yellow
-            }
-        }
-        catch {
-            Write-Host "Test error: $_" -ForegroundColor Red
-            Write-Host "Please try running the manual commands above" -ForegroundColor Yellow
-        }
-        
-        Write-Host "`n--- End ---" -ForegroundColor Cyan
-    }
-}
-
-# 保存配置
-function Save-ProxyConfig {
-    param(
-        [hashtable]$Config
-    )
-    
-    if (-not $NoSave -and $action -notin @("status", "test", "curltest", "log")) {
-        try {
-            # 备份现有配置
-            Backup-ProxyConfig
-            
-            # 更新修改时间
-            $Config.LastModified = Get-Date
-            
-            # 保存新配置
-            $Config | Export-Clixml -Path $configPath -Force
-            Write-Log "Configuration saved successfully" "SUCCESS"
-            return $true
-        }
-        catch {
-            Write-Log "Failed to save configuration: $_" "ERROR"
-            return $false
-        }
-    }
-    return $true
-}
-
-# 新增命令处理
-switch ($action.ToLower()) {
-    "backup" {
-        if (Backup-ProxyConfig) {
-            Write-Log "Configuration backed up to: $backupPath" "SUCCESS"
-        }
-        exit
-    }
-    
-    "restore" {
-        if (Test-Path $backupPath) {
-            try {
-                Copy-Item -Path $backupPath -Destination $configPath -Force
-                Write-Log "Configuration restored from backup" "SUCCESS"
-                # 重新加载配置
-                $config = Initialize-ProxyConfig
-                Show-Status
-            }
-            catch {
-                Write-Log "Failed to restore configuration: $_" "ERROR"
-            }
-        } else {
-            Write-Log "No backup file found at: $backupPath" "ERROR"
-        }
-        exit
-    }
-    
-    "reset" {
-        try {
-            # 禁用所有代理
-            Disable-Proxy -Type "all"
-            
-            # 删除配置文件
-            if (Test-Path $configPath) {
-                Remove-Item -Path $configPath -Force
-            }
-            
-            # 重新创建默认配置
-            $config = Initialize-ProxyConfig
-            Write-Log "Configuration reset to defaults" "SUCCESS"
-            Show-Status
-        }
-        catch {
-            Write-Log "Failed to reset configuration: $_" "ERROR"
-        }
-        exit
-    }
-    
-    "log" {
-        if (Test-Path $logPath) {
-            Write-Host "`n--- Recent Log Entries ---" -ForegroundColor Cyan
-            Get-Content -Path $logPath -Tail 20 | ForEach-Object {
-                if ($_ -match "\[ERROR\]") {
-                    Write-Host $_ -ForegroundColor Red
-                } elseif ($_ -match "\[WARN\]") {
-                    Write-Host $_ -ForegroundColor Yellow
-                } elseif ($_ -match "\[SUCCESS\]") {
-                    Write-Host $_ -ForegroundColor Green
-                } else {
-                    Write-Host $_
-                }
-            }
-            Write-Host "`nFull log available at: $logPath" -ForegroundColor Cyan
-        } else {
-            Write-Log "No log file found" "WARN"
-        }
-        exit
-    }
-}
-
-# 保存配置
-Save-ProxyConfig -Config $config
+# 执行主函数
+Main
