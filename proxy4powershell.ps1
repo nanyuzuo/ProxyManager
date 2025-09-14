@@ -287,7 +287,7 @@ function Set-WindowsSystemProxy {
                 }
                 
                 # 设置代理覆盖列表
-                $bypassList = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*"
+                $bypassList = 'localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*'
                 Set-ItemProperty -Path $registryPath -Name "ProxyOverride" -Value $bypassList
             }
             
@@ -395,18 +395,18 @@ function Create-CommandWrappers {
     )
     
     # PowerShell curl包装器函数
-    $curlWrapper = @"
+    $curlWrapper = @'
 function Invoke-ProxyCurl {
-    param([Parameter(ValueFromRemainingArguments=`$true)]`$Arguments)
-    
-    `$proxyArgs = @()
-    if ("`$env:CURRENT_SOCKS_PROXY") {
-        `$proxyArgs += "--socks5", "`$env:CURRENT_SOCKS_PROXY"
-    } elseif ("`$env:CURRENT_HTTP_PROXY") {
-        `$proxyArgs += "--proxy", "`$env:CURRENT_HTTP_PROXY"
+    param([Parameter(ValueFromRemainingArguments=$true)]$Arguments)
+
+    $proxyArgs = @()
+    if ("$env:CURRENT_SOCKS_PROXY") {
+        $proxyArgs += "--socks5", "$env:CURRENT_SOCKS_PROXY"
+    } elseif ("$env:CURRENT_HTTP_PROXY") {
+        $proxyArgs += "--proxy", "$env:CURRENT_HTTP_PROXY"
     }
-    
-    if (`$proxyArgs.Count -gt 0) {
+
+    if ($proxyArgs.Count -gt 0) {
         & curl @proxyArgs @Arguments
     } else {
         & curl @Arguments
@@ -414,7 +414,7 @@ function Invoke-ProxyCurl {
 }
 
 Set-Alias -Name curl -Value Invoke-ProxyCurl -Force -Scope Global
-"@
+'@
     
     $wrapperFile = "$script:WrapperDir\ProxyWrappers.ps1"
     Set-Content -Path $wrapperFile -Value $curlWrapper -Encoding UTF8
